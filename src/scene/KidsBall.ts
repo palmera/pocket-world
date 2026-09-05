@@ -3,6 +3,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { PointerRouting, type InputMode } from "./pointerRouting";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { bakeToy, heroModel, makePerson, sceneryModel } from "./worldArt";
+import { disposeExcept, FrameCache, joinFloat32 } from "./renderResources";
 import { Vec3, normalize, sub, dot, cross, len, onSphere } from "../engine/geometry/vec";
 import { extractSphereFaces } from "../engine/freestyle/sphereGraph";
 import { type FreeGraph } from "../engine/freestyle/freestyleGraph";
@@ -75,6 +76,10 @@ export class KidsBall {
   private pointers = new PointerRouting();
   private history = new History<EditState>((state) => JSON.parse(JSON.stringify(state)));
   private exactEdges = new Set<string>();
+  private faceGeometry = new FrameCache<THREE.BufferGeometry>();
+  private surfaceGeometry = new FrameCache<THREE.BufferGeometry>();
+  private toyModels = new FrameCache<THREE.Group>();
+  private renderedState?: EditState;
   private panelMeshes: THREE.Mesh[] = [];
   private animatedDetails: AnimatedDetail[] = [];
   private behaviourEngine: BehaviourEngine = createBasicBehaviourEngine();
@@ -371,7 +376,37 @@ export class KidsBall {
 
   // ---- rendering ------------------------------------------------------------
   private render() {
-    this.disposeWorldGroup();
+    const previous = { group: this.group, panels: this.panelMeshes, details: this.animatedDetails, shaders: this.jellyShaders, exact: this.exactEdges };
+    const caches = [this.faceGeometry, this.surfaceGeometry, this.toyModels];
+    caches.forEach(cache=>cache.begin());
+    this.group = new THREE.Group();
+    this.group.scale.copy(previous.group.scale);
+    this.jellyShaders = [];
+    try {
+      this.buildWorld();
+    } catch (error) {
+      disposeExcept(this.group, previous.group);
+      this.group=previous.group;
+      this.panelMeshes=previous.panels;
+      this.animatedDetails=previous.details;
+      this.jellyShaders=previous.shaders;
+      this.exactEdges=previous.exact;
+      caches.forEach(cache=>cache.rollback());
+      if(this.renderedState) {
+        this.graph=this.renderedState.graph;
+        this.paintByFace=new Map(Object.entries(this.renderedState.paints));
+      }
+      throw error;
+    }
+    caches.forEach(cache=>cache.commit());
+    this.scene.add(this.group);
+    this.scene.remove(previous.group);
+    disposeExcept(previous.group, this.group);
+    this.renderedState={graph:this.graph,paints:Object.fromEntries(this.paintByFace)};
+    this.onChange?.();
+  }
+
+  private buildWorld() {
     this.panelMeshes = [];
     this.animatedDetails = [];
     const g = this.graph;
@@ -379,28 +414,36 @@ export class KidsBall {
     this.exactEdges = new Set([...(g.authoredEdges ?? []),...(g.bridgeEdges ?? [])].map(([a,b])=>edgeId(a,b)));
     const bridges = new Set((g.bridgeEdges ?? []).map(([a,b])=>edgeId(a,b)));
     const faces = extractSphereFaces(g.verts, g.edges);
+    const faceKeys = faces.map(faceKey);
+    const facePaints = faceKeys.map(key=>this.paintByFace.get(key));
     const vertsMm = g.verts.map((v) => [v[0] * R, v[1] * R, v[2] * R] as Vec3);
     const edgeOwners = new Map<string, { a: number; b: number; faces: number[] }>();
-    const terrainSurfaces = new Map<PaintKind | "empty", number[]>();
+    const terrainSurfaces = new Map<PaintKind | "empty", THREE.BufferGeometry[]>();
+    let hitMaterial: THREE.MeshBasicMaterial | undefined;
 
     faces.forEach((face, fi) => {
-      const key = faceKey(face);
-      const positions = this.faceMesh(vertsMm, face);
+      const key = faceKeys[fi];
+      // Include coordinates and exact-edge flags: undo, imported worlds and
+      // moving vertices may reuse indices while changing the actual surface.
+      const signature = `${this.worldStyle}:${face.map((a,i)=>`${a}:${g.verts[a].join(",")}:${this.exactEdges.has(edgeId(a,face[(i+1)%face.length]))?1:0}`).join(";")}`;
+      const geom = this.faceGeometry.get(signature, ()=>{
+        const positions = this.faceMesh(vertsMm, face);
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions,3));
+        geometry.setAttribute("uv", new THREE.Float32BufferAttribute(this.sphericalUvs(positions),2));
+        geometry.setAttribute("normal", new THREE.Float32BufferAttribute(this.sphericalNormals(positions),3));
+        return geometry;
+      });
       const paint = this.paintByFace.get(key);
       const surfaceKey = paint ?? "empty";
       const surface = terrainSurfaces.get(surfaceKey) ?? [];
-      surface.push(...positions);
+      surface.push(geom);
       terrainSurfaces.set(surfaceKey, surface);
 
-      // This mesh exists solely for precise painting and drawing hit tests.
-      // Its colour buffer is disabled so neighbouring panels of one habitat
-      // can fuse into a single uninterrupted rendered surface below.
-      const geom = new THREE.BufferGeometry();
-      geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-      const hitMaterial = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, depthTest: false });
-      hitMaterial.colorWrite = false;
-      const mesh = new THREE.Mesh(geom, hitMaterial);
-      mesh.frustumCulled = false;
+      // Raycaster intersects invisible meshes; keep them in the transform tree
+      // without submitting a transparent draw call for every editable face.
+      const mesh = new THREE.Mesh(geom, hitMaterial ??= new THREE.MeshBasicMaterial());
+      mesh.visible = false;
       mesh.userData.faceKey = key;
       this.panelMeshes.push(mesh);
       this.group.add(mesh);
@@ -415,11 +458,15 @@ export class KidsBall {
 
     // One material surface per colour makes adjacent places genuinely merge.
     // The invisible meshes above retain the editable face-level hit targets.
-    for (const [paint, positions] of terrainSurfaces) {
-      const geom = new THREE.BufferGeometry();
-      geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-      geom.setAttribute("uv", new THREE.Float32BufferAttribute(this.sphericalUvs(positions), 2));
-      geom.setAttribute("normal", new THREE.Float32BufferAttribute(this.sphericalNormals(positions), 3));
+    for (const [paint, parts] of terrainSurfaces) {
+      const geom = this.surfaceGeometry.get(`${paint}:${parts.map(part=>part.uuid).join(",")}`, ()=>{
+        const geometry = new THREE.BufferGeometry();
+        for(const [attribute,size] of [["position",3],["uv",2],["normal",3]] as const) {
+          const chunks=parts.map(part=>part.getAttribute(attribute).array as Float32Array);
+          geometry.setAttribute(attribute,new THREE.BufferAttribute(joinFloat32(chunks),size));
+        }
+        return geometry;
+      });
       const surface = new THREE.Mesh(geom, this.panelMaterial(paint === "empty" ? undefined : paint));
       surface.receiveShadow = true;
       surface.frustumCulled = false;
@@ -433,14 +480,14 @@ export class KidsBall {
         if(bridges.has(edgeId(a,b))) continue;
         const adjacent = edgeOwners.get(edgeId(a,b));
         if(adjacent?.faces.length===2) {
-          const left=this.paintByFace.get(faceKey(faces[adjacent.faces[0]]));
-          if(left && left===this.paintByFace.get(faceKey(faces[adjacent.faces[1]]))) continue;
+          const left=facePaints[adjacent.faces[0]];
+          if(left && left===facePaints[adjacent.faces[1]]) continue;
         }
         const va = vertsMm[a], vb = vertsMm[b];
         if (!va || !vb) continue;
         if (this.worldStyle === "jelly") {
           const edge = edgeOwners.get(a < b ? `${a},${b}` : `${b},${a}`);
-          if (edge?.faces.length === 2 && this.paintByFace.get(faceKey(faces[edge.faces[0]])) === this.paintByFace.get(faceKey(faces[edge.faces[1]]))) continue;
+          if (edge?.faces.length === 2 && facePaints[edge.faces[0]] === facePaints[edge.faces[1]]) continue;
           this.addJellySeam(va, vb, a, b);
           continue;
         }
@@ -462,7 +509,7 @@ export class KidsBall {
       const ink: number[] = [];
       for(const [a,b] of g.authoredEdges ?? []) {
         const adjacent=edgeOwners.get(edgeId(a,b));
-        if(adjacent?.faces.length===2 && this.paintByFace.get(faceKey(faces[adjacent.faces[0]]))===this.paintByFace.get(faceKey(faces[adjacent.faces[1]]))) continue;
+        if(adjacent?.faces.length===2 && facePaints[adjacent.faces[0]]===facePaints[adjacent.faces[1]]) continue;
         ink.push(...onSphere(vertsMm[a],R*1.002),...onSphere(vertsMm[b],R*1.002));
       }
       const inkGeometry = new THREE.BufferGeometry();
@@ -478,7 +525,7 @@ export class KidsBall {
         const anchor = new THREE.Group();
         anchor.position.copy(center).multiplyScalar(R + .35);
         anchor.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),center);
-        const scenery = sceneryModel(terrain,fi);
+        const scenery = this.toyModels.get(`scenery:${terrain}:${fi}`,()=>sceneryModel(terrain,fi)).clone(true);
         scenery.scale.setScalar(terrain === "water" ? 6 : 6.5 + (fi % 4) * 1.25);
         scenery.rotation.y = fi * 2.399;
         anchor.add(scenery);
@@ -488,8 +535,8 @@ export class KidsBall {
       const coast: number[] = [];
       for (const edge of edgeOwners.values()) {
         if (edge.faces.length !== 2) continue;
-        const left = this.paintByFace.get(faceKey(faces[edge.faces[0]]));
-        const right = this.paintByFace.get(faceKey(faces[edge.faces[1]]));
+        const left = facePaints[edge.faces[0]];
+        const right = facePaints[edge.faces[1]];
         if (left === right || (left !== "water" && right !== "water")) continue;
         const points = this.organicEdge(vertsMm[edge.a],vertsMm[edge.b],edge.a,edge.b);
         for (let i=1;i<points.length;i++) coast.push(...onSphere(points[i-1],R+.3),...onSphere(points[i],R+.3));
@@ -498,8 +545,8 @@ export class KidsBall {
       coastGeometry.setAttribute("position",new THREE.Float32BufferAttribute(coast,3));
       this.group.add(new THREE.LineSegments(coastGeometry,new THREE.LineBasicMaterial({color:0xdbf3d9,transparent:true,opacity:.75})));
       for (const contact of findTerrainBorderContacts(faces, g.verts, edgeOwners.values(), this.paintByFace)) {
-        const left = this.paintByFace.get(faceKey(faces[contact.leftFace]));
-        const right = this.paintByFace.get(faceKey(faces[contact.rightFace]));
+        const left = facePaints[contact.leftFace];
+        const right = facePaints[contact.rightFace];
         if (isTerrain(left) && isTerrain(right) && left !== right) {
           const story = borderStoryFor(left, right);
           if (story) this.addBorderStory(story, vertsMm[contact.a], vertsMm[contact.b]);
@@ -507,23 +554,6 @@ export class KidsBall {
       }
       this.addTerrainLife(faces, edgeOwners, g);
     }
-    this.onChange?.();
-  }
-
-  // Painting and drawing rebuild the little world often. Dispose the previous
-  // geometries and materials first so a long iPad session stays smooth instead
-  // of quietly retaining every old panel, seam, and animated prop on the GPU.
-  private disposeWorldGroup() {
-    this.group.traverse((object) => {
-      const drawable = object as THREE.Mesh | THREE.Line;
-      if ("geometry" in drawable && drawable.geometry) drawable.geometry.dispose();
-      if ("material" in drawable && drawable.material) {
-        const materials = Array.isArray(drawable.material) ? drawable.material : [drawable.material];
-        materials.forEach((material) => material.dispose());
-      }
-    });
-    this.group.clear();
-    this.jellyShaders = [];
   }
 
   private panelMaterial(paint?: PaintKind): THREE.MeshStandardMaterial {
@@ -858,7 +888,7 @@ export class KidsBall {
     anchor.rotateY(phase);
     this.group.add(anchor);
 
-    const model = heroModel(detail) ?? bakeToy(this.makeTerrainModel(detail));
+    const model = this.toyModels.get(`detail:${detail.id}`,()=>heroModel(detail) ?? bakeToy(this.makeTerrainModel(detail))).clone(true);
     // People are the emotional focus of Tiny World, so they intentionally
     // break the old miniature scale. Other discoveries grow too, preserving
     // a coherent toy-world silhouette instead of isolated giant characters.
@@ -1213,7 +1243,11 @@ export class KidsBall {
       const hit = this.raycaster.intersectObjects(this.panelMeshes, false)[0];
       if (hit?.object.userData.faceKey) {
         e.preventDefault();
-        if(this.paintByFace.get(hit.object.userData.faceKey) !== this.selectedPaint) this.history.push(this.editState());
+        if(this.paintByFace.get(hit.object.userData.faceKey) === this.selectedPaint) {
+          if (this.worldStyle === "jelly") this.triggerJellyImpact(hit.point, 0.85);
+          return;
+        }
+        this.history.push(this.editState());
         const keys = paintRegion(this.graph,this.paintByFace,hit.object.userData.faceKey);
         keys.forEach(key=>this.paintByFace.set(key,this.selectedPaint));
         if (this.worldStyle === "jelly") this.triggerJellyImpact(hit.point, 0.85);

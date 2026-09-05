@@ -5,6 +5,7 @@
 // sampled stroke and renders the result.
 
 import { Vec3, sub, add, cross, dot, len, normalize, scale } from "../geometry/vec";
+import { arcBounds, overlappingArcs, pointsInBounds } from "./arcBounds";
 
 export interface FreeGraph {
   verts: number[][]; // unit vectors
@@ -227,15 +228,14 @@ export function planarize(g: FreeGraph, weldTol = 1e-7): FreeGraph {
   };
 
   const edges = dedupeEdges(g.edges);
+  const bounds = edges.map(([a,b])=>arcBounds(verts[a],verts[b]));
   // 1. Add a vertex at each crossing of two non-adjacent edges.
-  for (let i = 0; i < edges.length; i++) {
-    for (let j = i + 1; j < edges.length; j++) {
+  for (const [i,j] of overlappingArcs(bounds)) {
       const [a1, a2] = edges[i];
       const [b1, b2] = edges[j];
       if (a1 === b1 || a1 === b2 || a2 === b1 || a2 === b2) continue; // share an endpoint
       const p = arcArcIntersection(verts[a1], verts[a2], verts[b1], verts[b2]);
       if (p) getOrAdd(p);
-    }
   }
 
   // 2. Rebuild: split every edge at all vertices lying on its interior.
@@ -243,9 +243,10 @@ export function planarize(g: FreeGraph, weldTol = 1e-7): FreeGraph {
   const authored = new Set((g.authoredEdges ?? []).map(([a,b])=>edgeKey(a,b)));
   const bridges = new Set((g.bridgeEdges ?? []).map(([a,b])=>edgeKey(a,b)));
   const authoredEdges: [number,number][] = [], bridgeEdges: [number,number][] = [];
-  for (const [a, b] of edges) {
+  const candidates = pointsInBounds(verts);
+  for (const [edgeIndex, [a, b]] of edges.entries()) {
     const mids: number[] = [];
-    for (let k = 0; k < verts.length; k++) {
+    for (const k of candidates(bounds[edgeIndex])) {
       if (k === a || k === b) continue;
       if (pointOnArc(verts[k], verts[a], verts[b])) mids.push(k);
     }

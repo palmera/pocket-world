@@ -20,7 +20,12 @@ npm run dev
 ```sh
 npm test
 npm run build
+npm run benchmark
 ```
+
+La prueba de carga mide 20 círculos y la construcción/reutilización de un mundo con 12 áreas internas. Los tiempos dependen del equipo; no son una medición de FPS ni un presupuesto garantizado para iPad. Las pruebas automáticas cubren regiones grandes, edición incremental, pintura, liberación de recursos y recuperación ante fallos.
+
+Cada edición descarta candidatos lejanos antes de calcular intersecciones exactas y reutiliza geometrías y modelos que no cambiaron. Las cachés conservan solo el mundo actual; no simplifican el dibujo ni acumulan todos los estados anteriores. Todavía se reconstruyen las líneas y parte de los objetos de escena: el costo no es independiente del tamaño del mundo.
 
 ## Publicación
 

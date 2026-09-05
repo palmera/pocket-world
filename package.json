@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "tsc --noEmit && node --import tsx --test test/*.test.ts"
+    "test": "tsc --noEmit && node --import tsx --test test/*.test.ts",
+    "benchmark": "node --import tsx test/performance.bench.ts"
   },
   "dependencies": {
     "three": "^0.169.0"
