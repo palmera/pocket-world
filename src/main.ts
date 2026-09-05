@@ -1,4 +1,5 @@
 import { KidsBall, KidTool, PaintKind, WorldStyle } from "./scene/KidsBall";
+import type { InputMode } from "./scene/pointerRouting";
 import "./world.css";
 
 const icons: Record<string,string> = {
@@ -19,6 +20,25 @@ const KEY = "pocket-world.current";
 // The preview URL has a separate, tab-scoped save for visual regression checks.
 const storage = new URLSearchParams(location.search).has("preview") ? sessionStorage : localStorage;
 const ball = new KidsBall(document.getElementById("ball") as HTMLElement);
+
+// Device preference, separate from the planet save and undo history. Available
+// on all devices: iPad desktop browsing must not hide the Pencil control.
+const inputKey="pocket-world.input-mode";
+const inputSwitch=document.createElement("div");
+inputSwitch.id="input-mode";
+inputSwitch.setAttribute("role","group");
+inputSwitch.setAttribute("aria-label","Modo de entrada");
+inputSwitch.innerHTML='<button type="button" data-input="hand" aria-pressed="true" title="Dibujar y pintar con el dedo">Mano</button><button type="button" data-input="pen" aria-pressed="false" title="Apple Pencil dibuja y pinta; los dedos solo mueven la cámara">Lápiz</button>';
+document.getElementById("app")!.appendChild(inputSwitch);
+function selectInputMode(mode:InputMode) {
+  ball.setInputMode(mode);
+  inputSwitch.querySelectorAll<HTMLButtonElement>("button").forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.input===mode)));
+  try { storage.setItem(inputKey,mode); } catch { /* private browsing */ }
+}
+inputSwitch.querySelectorAll<HTMLButtonElement>("button").forEach(button=>button.addEventListener("click",()=>selectInputMode(button.dataset.input as InputMode)));
+let savedInput:InputMode="hand";
+try { if(storage.getItem(inputKey)==="pen") savedInput="pen"; } catch { /* private browsing */ }
+selectInputMode(savedInput);
 
 // Restore the last planet, or begin with a blank sphere.
 function savedWorld(): unknown | null {

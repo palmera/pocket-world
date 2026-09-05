@@ -34,3 +34,5 @@ El mundo se guarda en el navegador de cada dispositivo; no se sincroniza automá
 - **Borders:** elegir terreno y cerrar un contorno o dividir una zona; la nueva región recibe el terreno elegido. En un corte abierto se elige la porción más pequeña.
 - **Land:** pintar una región existente. Regiones iguales que comparten arista se unen.
 - Deshacer, rehacer y guardar una imagen desde la barra de acciones.
+- **Mano / Lápiz:** en Mano, el dedo usa la herramienta elegida. En Lápiz, los dedos sobre el planeta solo giran o acercan la cámara; el Apple Pencil dibuja o pinta. Move sigue moviendo la cámara también con el lápiz. La preferencia queda guardada por navegador.
+- Si empezás a mover la cámara mientras dibujás, el trazo pendiente se cancela. Levantá el lápiz y los dedos antes de comenzar otro trazo. Los botones de la interfaz siguen funcionando con el dedo.

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { PointerRouting, type InputMode } from "./pointerRouting";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { bakeToy, heroModel, makePerson, sceneryModel } from "./worldArt";
 import { Vec3, normalize, sub, dot, cross, len, onSphere } from "../engine/geometry/vec";
@@ -69,6 +70,8 @@ export class KidsBall {
   private selectedPaint: PaintKind = "meadow";
   private worldStyle: WorldStyle = "tiny";
   private tool: KidTool = "draw";
+  private inputMode: InputMode = "hand";
+  private pointers = new PointerRouting();
   private history = new History<EditState>((state) => JSON.parse(JSON.stringify(state)));
   private exactEdges = new Set<string>();
   private panelMeshes: THREE.Mesh[] = [];
@@ -172,16 +175,44 @@ export class KidsBall {
     window.addEventListener("resize", () => this.onResize());
     const el = this.renderer.domElement;
     el.style.touchAction = "none";
-    el.addEventListener("pointerdown", (e) => this.onDown(e));
-    el.addEventListener("pointermove", (e) => this.onMove(e));
-    el.addEventListener("pointerup", (e) => this.onUp(e));
-    el.addEventListener("pointercancel", (e) => this.onUp(e, true));
+    // Capture runs BEFORE OrbitControls' bubble listeners, regardless of the
+    // order in which they were installed. Pen strokes cannot rotate the camera.
+    el.addEventListener("pointerdown", (e) => {
+      const route=this.pointers.down(e.pointerId,e.pointerType,this.tool,this.inputMode);
+      if(route.cancelled !== undefined) this.cancelStroke();
+      if(route.owner === "camera") return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      if(route.owner === "edit") {
+        el.setPointerCapture(e.pointerId);
+        this.onDown(e);
+      }
+    },true);
+    el.addEventListener("pointermove", (e) => {
+      const owner=this.pointers.owner(e.pointerId);
+      if(owner === "camera") return;
+      e.stopImmediatePropagation();
+      if(owner === "edit") this.onMove(e);
+    },true);
+    const finish = (e:PointerEvent,cancelled:boolean) => {
+      const owner=this.pointers.up(e.pointerId);
+      if(owner === "camera") return;
+      e.stopImmediatePropagation();
+      if(owner === "edit") this.onUp(e,cancelled);
+      if(el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+    };
+    el.addEventListener("pointerup", e=>finish(e,false),true);
+    el.addEventListener("pointercancel", e=>finish(e,true),true);
+    el.addEventListener("lostpointercapture", e=>{
+      if(this.pointers.owner(e.pointerId) === "edit") finish(e,true);
+    },true);
     this.animate();
   }
 
   // ---- public API ----------------------------------------------------------
   setChangeHandler(fn: () => void) { this.onChange = fn; }
-  setTool(t: KidTool) { this.tool = t; }
+  setTool(t: KidTool) { this.pointers.cancelEdit(); this.cancelStroke(); this.tool = t; }
+  setInputMode(mode: InputMode) { this.pointers.cancelEdit(); this.cancelStroke(); this.inputMode=mode; }
   setPaint(paint: PaintKind) { this.selectedPaint = paint; }
   setBehaviourEngine(engine: BehaviourEngine) { this.behaviourEngine = engine; }
   getWorldStyle() { return this.worldStyle; }
@@ -1191,6 +1222,16 @@ export class KidsBall {
     this.strokeStep = THREE.MathUtils.clamp(distance * 2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)) / height / R * 1.5,.0005,.008);
     this.controls.enabled = false;
     this.updatePreview();
+  }
+
+  private cancelStroke() {
+    const id=this.activePointerId;
+    this.activePointerId=undefined;
+    this.drawing=false;
+    this.strokePts=[];
+    this.removePreview();
+    this.controls.enabled=true;
+    if(id !== undefined && this.renderer.domElement.hasPointerCapture(id)) this.renderer.domElement.releasePointerCapture(id);
   }
 
   private onMove(e: PointerEvent) {
