@@ -125,8 +125,17 @@
           <div class="btnwrap"><button class="big plain" id="a-redo" title="Rehacer">↷</button><span class="label">Adelante</span></div>
           <div class="btnwrap"><button class="big plain" id="a-photo" title="Save photo">📷</button><span class="label">Save</span></div>
           <div class="btnwrap"><button class="big plain" id="a-clear" title="New world">＋</button><span class="label">New</span></div>
+          <button class="big empty" id="a-empty" type="button" title="Borrar el Tiny World y empezar desde cero">Tiny desde cero</button>
       </div>
     </div>
+    <dialog id="empty-confirm" aria-labelledby="empty-title" aria-describedby="empty-description">
+      <h2 id="empty-title">¿Empezar desde cero?</h2>
+      <p id="empty-description">Se borrarán todos los terrenos, bordes y habitantes del Tiny World actual. Podés recuperarlo con Deshacer mientras no recargues la página.</p>
+      <form method="dialog">
+        <button value="cancel" autofocus>Cancelar</button>
+        <button value="clear" class="confirm-empty">Borrar y empezar</button>
+      </form>
+    </dialog>
     <div id="world-picker">
       <div class="picker-card">
         <h1>Make a tiny world.</h1>

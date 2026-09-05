@@ -128,6 +128,7 @@ function applyWorldUi(style: WorldStyle) {
   ball.setPaint(set[0].paint);
   const randomWrap = document.getElementById("random-wrap")!;
   randomWrap.classList.toggle("hidden", style !== "jelly" && style !== "tiny");
+  document.getElementById("a-empty")!.hidden=style !== "tiny";
 }
 paintBtns.forEach((btn) => btn.addEventListener("click", () => {
   ball.setPaint(btn.dataset.paint as PaintKind);
@@ -146,6 +147,17 @@ styleBtns.forEach((btn) => btn.addEventListener("click", () => {
 }));
 
 // ---- actions ----
+const emptyDialog=document.getElementById("empty-confirm") as HTMLDialogElement;
+document.getElementById("a-empty")!.addEventListener("click",()=>{
+  if(ball.getWorldStyle() !== "tiny") return;
+  emptyDialog.returnValue="cancel";
+  emptyDialog.showModal();
+});
+emptyDialog.addEventListener("close",()=>{
+  if(emptyDialog.returnValue !== "clear" || ball.getWorldStyle() !== "tiny") return;
+  ball.clearTinyWorld();
+  selectTool("draw");
+});
 document.getElementById("a-undo")!.addEventListener("click", () => ball.undo());
 document.getElementById("a-redo")!.addEventListener("click", () => ball.redo());
 document.getElementById("a-random")!.addEventListener("click", () => ball.randomWorld());

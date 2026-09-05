@@ -16,6 +16,15 @@ button:focus-visible { outline: 3px solid #f7d287; outline-offset: 5px; }
 #actions { top:22px; right:28px; gap:5px; padding:5px; border:1px solid #e2eee722; background:#15253470; backdrop-filter:blur(20px); border-radius:18px; }
 #actions button.big { background:transparent; box-shadow:none; width:38px; height:38px; border-radius:11px; color:#e6eee5; }
 #actions button.big:hover { background:#e1f1dc1c; }
+#actions button.empty { width:auto; padding:0 12px; font-size:11px; white-space:nowrap; }
+#actions button.empty[hidden] { display:none; }
+#empty-confirm { width:min(400px,calc(100vw - 64px)); border:1px solid #ffffff66; padding:26px; border-radius:24px; color:#304d57; background:#f6f0e8; box-shadow:0 24px 90px #0006; }
+#empty-confirm::backdrop { background:#102130a8; backdrop-filter:blur(5px); }
+#empty-confirm h2 { margin:0 0 12px; font-size:24px; }
+#empty-confirm p { font-size:14px; line-height:1.65; margin:0 0 24px; }
+#empty-confirm form { display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-end; }
+#empty-confirm button { border:1px solid #304d5733; border-radius:12px; padding:12px 16px; min-height:44px; background:transparent; color:#304d57; font-weight:650; cursor:pointer; }
+#empty-confirm button.confirm-empty { background:#304d57; color:#fff5de; }
 svg.icon { width:21px; height:21px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; pointer-events:none; }
 #palette { width:auto; height:auto; right:auto; left:50%; bottom:24px; transform:translateX(-50%); border-radius:24px; display:flex; align-items:center; gap:20px; padding:12px 16px; border:1px solid #faf3df35; background:#f6f0e8f0; box-shadow:0 12px 38px #050e243d,inset 0 1px 0 #fff; backdrop-filter:blur(24px); pointer-events:auto; }
 #palette::before { display:none; }
@@ -49,3 +58,5 @@ body[data-world="blank"] #world-caption,body[data-world="doodle"] #world-caption
 @media(max-width:620px) { #topbar{padding:20px;} #topbar .count{display:none;} #topbar .brand{font-size:17px;} #actions{top:66px;right:16px;} #world-caption{left:20px;top:76px;font-size:9px;} #world-caption strong{font-size:23px;} #palette{left:50%;right:auto;bottom:calc(16px + env(safe-area-inset-bottom));transform:translateX(-50%);transform-origin:center;gap:10px;padding:10px;width:max-content;max-width:calc(100vw - 16px);} #palette .biomes{gap:7px;} .biome{width:28px;height:28px;} .tools-inner{padding-right:10px;} #palette button.big{width:35px;} .styles{gap:12px;} .style{min-height:180px;padding:20px 8px 15px;} .style span{width:72px;height:72px;margin-bottom:15px;} .picker-card p{margin-bottom:20px;} }
 @media(prefers-reduced-motion:reduce) { * { animation:none!important; transition:none!important; } }
 @media(max-width:620px) { #actions { top:142px; left:20px; right:auto; } #actions button.big { width:34px; height:34px; } }
+#actions button.empty { min-height:44px; }
+@media(max-width:620px) { #actions button.empty { width:auto; min-width:110px; } #input-mode { top:208px; } }

@@ -9,6 +9,7 @@ import { type FreeGraph } from "../engine/freestyle/freestyleGraph";
 import { triangulateRegion } from "../engine/freestyle/sphereRegions";
 import { drawBorder } from "../world/drawBorder";
 import { paintRegion } from "../world/paintRegion";
+import { WORLD_SAVE_VERSION, shouldSeedLegacyWorld } from "../world/saveFormat";
 import { History } from "../engine/editor/history";
 import { ECOSYSTEMS, borderStoryFor, type BorderStory, type EcosystemDetail } from "../world/ecosystems";
 import { findTerrainBorderContacts, findTerrainHabitats, isTerrain, panelKey as faceKey } from "../world/habitats";
@@ -242,20 +243,31 @@ export class KidsBall {
   randomWorld() {
     if (this.worldStyle === "jelly" || this.worldStyle === "tiny") this.newWorld(this.worldStyle);
   }
+  clearTinyWorld() {
+    if(this.worldStyle !== "tiny") return;
+    this.pointers.cancelEdit();
+    this.cancelStroke();
+    this.history.push(this.editState());
+    this.graph={verts:[],edges:[]};
+    this.paintByFace.clear();
+    this.frameWorld();
+    this.render();
+  }
   getSaveData() {
     return {
+      version: WORLD_SAVE_VERSION,
       graph: this.getGraph(),
       paints: Object.fromEntries(this.paintByFace),
       style: this.worldStyle,
     };
   }
   loadSaveData(data: unknown) {
-    const saved = data as { graph?: FreeGraph; paints?: Record<string, PaintKind>; biomes?: Record<string, Biome>; style?: WorldStyle };
+    const saved = data as { version?: number; graph?: FreeGraph; paints?: Record<string, PaintKind>; biomes?: Record<string, Biome>; style?: WorldStyle };
     if (!saved?.graph || !Array.isArray(saved.graph.verts) || !Array.isArray(saved.graph.edges)) return false;
     // Upgrade an old empty Jelly/Tiny save into the new playable starter world.
     // A child can still replace it at any time with the Random button.
-    if ((saved.style === "jelly" || saved.style === "tiny") && saved.graph.edges.length === 0) {
-      this.newWorld(saved.style);
+    if (shouldSeedLegacyWorld({...saved,graph:saved.graph})) {
+      this.newWorld(saved.style === "jelly" ? "jelly" : "tiny");
       return true;
     }
     this.graph = JSON.parse(JSON.stringify(saved.graph));
