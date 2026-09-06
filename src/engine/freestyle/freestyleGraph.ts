@@ -14,11 +14,11 @@ export interface FreeGraph {
   bridgeEdges?: [number, number][]; // invisible topology links for inset regions
 }
 
-const asV3 = (p: number[]): Vec3 => [p[0], p[1], p[2]];
+const asV3 = (p: readonly number[]): Vec3 => [p[0], p[1], p[2]];
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
 
 // Great-circle (angular) distance between two unit vectors, in radians.
-export function angBetween(a: number[], b: number[]): number {
+export function angBetween(a: readonly number[], b: readonly number[]): number {
   return Math.acos(clamp(dot(asV3(a), asV3(b)), -1, 1));
 }
 

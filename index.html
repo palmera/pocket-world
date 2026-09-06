@@ -116,7 +116,8 @@
         <div class="tools-inner">
           <div class="btnwrap" id="tool-move"><button class="big tool" id="t-move" title="Move">✋</button><span class="label">Move</span></div>
           <div class="btnwrap" id="tool-draw"><button class="big tool on" id="t-draw" title="Draw">✏️</button><span class="label" id="draw-label">Draw</span></div>
-          <div class="btnwrap" id="tool-paint"><button class="big tool" id="t-paint" title="Paint">🖌️</button><span class="label" id="paint-label">Paint</span></div>
+          <div class="btnwrap" id="tool-paint"><button class="big tool" id="t-paint" title="Balde: rellenar región">🪣</button><span class="label" id="paint-label">Balde</span></div>
+          <div class="btnwrap" id="tool-brush"><button class="big tool" id="t-brush" title="Pincel: pintar una franja">🖌️</button><span class="label">Pincel</span></div>
         </div>
       </div>
       <div id="actions" aria-label="World actions">
@@ -127,6 +128,7 @@
           <div class="btnwrap"><button class="big plain" id="a-clear" title="New world">＋</button><span class="label">New</span></div>
           <button class="big empty" id="a-empty" type="button" title="Borrar el Tiny World y empezar desde cero">Tiny desde cero</button>
       </div>
+      <label id="brush-options" hidden>Grosor <input id="brush-width" type="range" min="12" max="60" step="4" value="24" aria-label="Grosor del pincel"><output id="brush-size">24 px</output></label>
     </div>
     <dialog id="empty-confirm" aria-labelledby="empty-title" aria-describedby="empty-description">
       <h2 id="empty-title">¿Empezar desde cero?</h2>

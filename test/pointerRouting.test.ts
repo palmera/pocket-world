@@ -3,7 +3,7 @@ import test from "node:test";
 import { PointerRouting } from "../src/scene/pointerRouting";
 
 test("Pencil mode routes fingers to camera for every tool",()=>{
-  for(const tool of ["move","draw","paint"] as const) {
+  for(const tool of ["move","draw","paint","brush"] as const) {
     const router=new PointerRouting();
     assert.equal(router.down(1,"touch",tool,"pen").owner,"camera");
     assert.equal(router.down(2,"touch",tool,"pen").owner,"camera");
@@ -12,13 +12,13 @@ test("Pencil mode routes fingers to camera for every tool",()=>{
   }
 });
 test("Pencil edits while Move remains a camera tool",()=>{
-  for(const tool of ["draw","paint","move"] as const) {
+  for(const tool of ["draw","paint","brush","move"] as const) {
     const router=new PointerRouting();
     assert.equal(router.down(1,"pen",tool,"pen").owner,tool === "move"?"camera":"edit");
   }
 });
 test("Hand mode retains touch drawing and painting, and mouse remains usable",()=>{
-  for(const type of ["touch","pen","mouse"]) for(const tool of ["draw","paint"] as const) {
+  for(const type of ["touch","pen","mouse"]) for(const tool of ["draw","paint","brush"] as const) {
     assert.equal(new PointerRouting().down(1,type,tool,"hand").owner,"edit");
   }
   assert.equal(new PointerRouting().down(1,"mouse","draw","pen").owner,"edit");

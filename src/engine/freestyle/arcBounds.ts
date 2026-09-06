@@ -1,7 +1,7 @@
 // Conservative broad phase only: exact spherical predicates still decide
 // intersections. The sagitta bounds the whole minor arc, not just its chord.
 export type ArcBounds = { min: number[]; max: number[] };
-export function arcBounds(a: number[], b: number[]): ArcBounds {
+export function arcBounds(a: readonly number[], b: readonly number[]): ArcBounds {
   const cosine = Math.max(-1, Math.min(1, a[0]*b[0]+a[1]*b[1]+a[2]*b[2]));
   const padding = 1 - Math.sqrt((1 + cosine) / 2) + 4e-6;
   return {

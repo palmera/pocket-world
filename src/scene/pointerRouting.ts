@@ -11,7 +11,7 @@ export class PointerRouting {
       return id;
     }
   }
-  down(id:number, pointerType:string, tool:"move"|"draw"|"paint", mode:InputMode): {owner:Owner;cancelled?:number} {
+  down(id:number, pointerType:string, tool:"move"|"draw"|"paint"|"brush", mode:InputMode): {owner:Owner;cancelled?:number} {
     if(this.owners.has(id)) return {owner:this.owner(id)};
     const camera = tool === "move" || (mode === "pen" && pointerType === "touch");
     if(camera) {

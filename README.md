@@ -37,7 +37,10 @@ El mundo se guarda en el navegador de cada dispositivo; no se sincroniza automá
 
 - **Move:** girar y acercar el planeta.
 - **Borders:** elegir terreno y cerrar un contorno o dividir una zona; la nueva región recibe el terreno elegido. En un corte abierto se elige la porción más pequeña.
-- **Land:** pintar una región existente. Regiones iguales que comparten arista se unen.
+- **Balde:** rellenar una región existente. Regiones iguales que comparten arista se unen.
+- **Pincel:** pintar una franja con el color elegido, con grosor de 12–60 px. La franja se ve durante el gesto; al soltar se incorpora como terreno editable. Un círculo de pincel pinta un anillo, no rellena su centro. Un toque pinta un punto.
+- Los trazos se calculan en un Web Worker. Mientras aparece “Incorporando trazo…” la cámara sigue disponible; esperá a que termine para editar otra vez. Deshacer durante ese cálculo cancela el trazo pendiente. El armado final de la escena aún ocurre en la interfaz y puede tardar en mundos grandes.
+- **Jelly:** los límites entre colores son depresiones con un perfil suave de menisco, no tubos elevados. Es una representación visual de tensión superficial, no una simulación de fluidos.
 - Deshacer, rehacer y guardar una imagen desde la barra de acciones.
 - **Tiny desde cero:** borra terrenos, bordes y habitantes después de confirmar. El planeta sigue en modo Tiny, listo para dibujar, y permanece vacío al recargar. Deshacer recupera el mundo anterior durante la sesión; recargar cierra ese historial.
 - **Mano / Lápiz:** en Mano, el dedo usa la herramienta elegida. En Lápiz, los dedos sobre el planeta solo giran o acercan la cámara; el Apple Pencil dibuja o pinta. Move sigue moviendo la cámara también con el lápiz. La preferencia queda guardada por navegador.

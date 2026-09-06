@@ -4,11 +4,13 @@ import { PointerRouting, type InputMode } from "./pointerRouting";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { bakeToy, heroModel, makePerson, sceneryModel } from "./worldArt";
 import { disposeExcept, FrameCache, joinFloat32 } from "./renderResources";
+import { createJellyMeniscus } from "./jellyMeniscus";
 import { Vec3, normalize, sub, dot, cross, len, onSphere } from "../engine/geometry/vec";
 import { extractSphereFaces } from "../engine/freestyle/sphereGraph";
 import { type FreeGraph } from "../engine/freestyle/freestyleGraph";
 import { triangulateRegion } from "../engine/freestyle/sphereRegions";
-import { drawBorder } from "../world/drawBorder";
+import type { BorderEdit } from "../world/drawBorder";
+import type { EditRequest } from "../world/editWorker";
 import { paintRegion } from "../world/paintRegion";
 import { WORLD_SAVE_VERSION, shouldSeedLegacyWorld } from "../world/saveFormat";
 import { History } from "../engine/editor/history";
@@ -17,7 +19,7 @@ import { findTerrainBorderContacts, findTerrainHabitats, isTerrain, panelKey as 
 import { createRandomWorld } from "../world/randomWorld";
 import { createBasicBehaviourEngine, type AnimatedDetail, type BehaviourEngine } from "../world/behaviours";
 
-export type KidTool = "draw" | "paint" | "move";
+export type KidTool = "draw" | "paint" | "brush" | "move";
 export type Biome = "meadow" | "water" | "sand" | "lava" | "stone";
 export type WorldStyle = "blank" | "doodle" | "jelly" | "tiny";
 export type PaintKind = Biome | "red-crayon" | "blue-crayon" | "yellow-crayon" | "purple-crayon" | "green-crayon" | "strawberry" | "blueberry" | "lemon" | "grape" | "lime" | "charcoal" | "sky" | "sun" | "rose" | "mint";
@@ -98,7 +100,11 @@ export class KidsBall {
   private strokePts: Vec3[] = [];
   private strokeStart = new THREE.Vector2();
   private strokeStep = .004;
-  private preview?: THREE.Line;
+  private preview?: THREE.Line | THREE.Mesh;
+  private brushWidth = 24;
+  private brushRadius = .025;
+  private pendingWorker?: Worker;
+  private brushPreviewMaterial = new THREE.MeshBasicMaterial({side:THREE.DoubleSide,depthWrite:false,depthTest:false});
   private previewMaterial = new THREE.LineBasicMaterial({ color: 0x1c2430, depthTest: false });
   private raycaster = new THREE.Raycaster();
   private ndc = new THREE.Vector2();
@@ -220,15 +226,18 @@ export class KidsBall {
   setTool(t: KidTool) { this.pointers.cancelEdit(); this.cancelStroke(); this.tool = t; }
   setInputMode(mode: InputMode) { this.pointers.cancelEdit(); this.cancelStroke(); this.inputMode=mode; }
   setPaint(paint: PaintKind) { this.selectedPaint = paint; }
+  setBrushWidth(width:number) { this.brushWidth=THREE.MathUtils.clamp(width,12,60); }
   setBehaviourEngine(engine: BehaviourEngine) { this.behaviourEngine = engine; }
   getWorldStyle() { return this.worldStyle; }
   setWorldStyle(style: WorldStyle) {
+    this.cancelPendingEdit();
     this.worldStyle = style;
     this.resetJellyPhysics();
     this.applyWorldBackground();
     this.render();
   }
   newWorld(style: WorldStyle) {
+    this.cancelPendingEdit();
     this.history.clear();
     this.worldStyle = style;
     this.resetJellyPhysics();
@@ -250,6 +259,7 @@ export class KidsBall {
   }
   clearTinyWorld() {
     if(this.worldStyle !== "tiny") return;
+    this.cancelPendingEdit();
     this.pointers.cancelEdit();
     this.cancelStroke();
     this.history.push(this.editState());
@@ -267,6 +277,7 @@ export class KidsBall {
     };
   }
   loadSaveData(data: unknown) {
+    this.cancelPendingEdit();
     const saved = data as { version?: number; graph?: FreeGraph; paints?: Record<string, PaintKind>; biomes?: Record<string, Biome>; style?: WorldStyle };
     if (!saved?.graph || !Array.isArray(saved.graph.verts) || !Array.isArray(saved.graph.edges)) return false;
     // Upgrade an old empty Jelly/Tiny save into the new playable starter world.
@@ -356,6 +367,7 @@ export class KidsBall {
   }
 
   setGraph(g: FreeGraph, pushHistory = true) {
+    this.cancelPendingEdit();
     if (pushHistory) this.history.push(this.editState());
     this.graph = JSON.parse(JSON.stringify(g));
     this.render();
@@ -363,8 +375,8 @@ export class KidsBall {
 
   clear() { this.setGraph({ verts: [], edges: [] }); }
 
-  undo() { const r = this.history.undo(this.editState()); if (r) this.restoreEdit(r); }
-  redo() { const r = this.history.redo(this.editState()); if (r) this.restoreEdit(r); }
+  undo() { if(this.pendingWorker) {this.cancelPendingEdit();return;} const r = this.history.undo(this.editState()); if (r) this.restoreEdit(r); }
+  redo() { this.cancelPendingEdit(); const r = this.history.redo(this.editState()); if (r) this.restoreEdit(r); }
 
   // Snapshot the current view as a PNG data URL (for saving to Photos).
   snapshot(): string {
@@ -418,20 +430,56 @@ export class KidsBall {
     const facePaints = faceKeys.map(key=>this.paintByFace.get(key));
     const vertsMm = g.verts.map((v) => [v[0] * R, v[1] * R, v[2] * R] as Vec3);
     const edgeOwners = new Map<string, { a: number; b: number; faces: number[] }>();
+    faces.forEach((face,fi)=>face.forEach((a,i)=>{
+      const b=face[(i+1)%face.length], key=edgeId(a,b);
+      const owner=edgeOwners.get(key)??{a:Math.min(a,b),b:Math.max(a,b),faces:[]};
+      owner.faces.push(fi);edgeOwners.set(key,owner);
+    }));
+    const isJellyBoundary=(a:number,b:number)=>{
+      if(bridges.has(edgeId(a,b))) return false;
+      const owners=edgeOwners.get(edgeId(a,b))?.faces??[];
+      return owners.length!==2 || facePaints[owners[0]]!==facePaints[owners[1]];
+    };
+    // All panels sample the same height field, including hidden same-colour
+    // subdivisions near a coast. Per-face fields would tear at those seams.
+    const jellyBorders:[Vec3,Vec3][]=[];
+    if(this.worldStyle==="jelly") for(const [a,b] of g.edges) {
+      if(!isJellyBoundary(a,b))continue;
+      const points=this.organicEdge(vertsMm[a],vertsMm[b],a,b).map(p=>normalize(p));
+      for(let j=1;j<points.length;j++)jellyBorders.push([points[j-1],points[j]]);
+    }
+    const jellyInfluences=jellyBorders.map(pair=>{
+      const center=normalize([pair[0][0]+pair[1][0],pair[0][1]+pair[1][1],pair[0][2]+pair[1][2]]);
+      return {center,halfAngle:Math.acos(Math.max(-1,Math.min(1,dot(pair[0],pair[1]))))*.5,key:JSON.stringify(pair)};
+    });
+    const shapeJelly=this.worldStyle==="jelly"?createJellyMeniscus(jellyBorders):undefined;
     const terrainSurfaces = new Map<PaintKind | "empty", THREE.BufferGeometry[]>();
     let hitMaterial: THREE.MeshBasicMaterial | undefined;
 
     faces.forEach((face, fi) => {
       const key = faceKeys[fi];
+      let jellySignature="";
+      if(shapeJelly) {
+        const center=normalize(face.reduce<Vec3>((sum,i)=>[sum[0]+g.verts[i][0],sum[1]+g.verts[i][1],sum[2]+g.verts[i][2]],[0,0,0]));
+        let angularRadius=0;
+        for(const i of face)angularRadius=Math.max(angularRadius,Math.acos(Math.max(-1,Math.min(1,dot(center,vertsMm[i])/R))));
+        // A spherical cap contains the face and its curved edges. Only nearby
+        // visible borders can change its meniscus (including neighbouring faces).
+        jellySignature=jellyInfluences.filter(border=>angularRadius>=Math.PI/2 || dot(center,border.center)>=Math.cos(Math.min(Math.PI,angularRadius+.14+border.halfAngle))).map(border=>border.key).join(";");
+      }
       // Include coordinates and exact-edge flags: undo, imported worlds and
       // moving vertices may reuse indices while changing the actual surface.
-      const signature = `${this.worldStyle}:${face.map((a,i)=>`${a}:${g.verts[a].join(",")}:${this.exactEdges.has(edgeId(a,face[(i+1)%face.length]))?1:0}`).join(";")}`;
+      const signature = `${this.worldStyle}:${face.map((a,i)=>`${a}:${g.verts[a].join(",")}:${this.exactEdges.has(edgeId(a,face[(i+1)%face.length]))?1:0}`).join(";")}:${jellySignature}`;
       const geom = this.faceGeometry.get(signature, ()=>{
-        const positions = this.faceMesh(vertsMm, face);
+        let positions = this.faceMesh(vertsMm, face);
+        let normals:number[];
+        if(shapeJelly) {
+          const shaped=shapeJelly(positions);positions=shaped.positions;normals=shaped.normals;
+        } else normals=this.sphericalNormals(positions);
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions,3));
         geometry.setAttribute("uv", new THREE.Float32BufferAttribute(this.sphericalUvs(positions),2));
-        geometry.setAttribute("normal", new THREE.Float32BufferAttribute(this.sphericalNormals(positions),3));
+        geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals,3));
         return geometry;
       });
       const paint = this.paintByFace.get(key);
@@ -447,13 +495,6 @@ export class KidsBall {
       mesh.userData.faceKey = key;
       this.panelMeshes.push(mesh);
       this.group.add(mesh);
-      for (let i = 0; i < face.length; i++) {
-        const a = face[i], b = face[(i + 1) % face.length];
-        const edgeKey = a < b ? `${a},${b}` : `${b},${a}`;
-        const entry = edgeOwners.get(edgeKey) ?? { a: Math.min(a, b), b: Math.max(a, b), faces: [] };
-        entry.faces.push(fi);
-        edgeOwners.set(edgeKey, entry);
-      }
     });
 
     // One material surface per colour makes adjacent places genuinely merge.
@@ -473,8 +514,8 @@ export class KidsBall {
       this.group.add(surface);
     }
 
-    // Jelly borders are raised, soft tubes. The other worlds keep illustrated lines.
-    if (g.edges.length && this.worldStyle !== "tiny") {
+    // Jelly boundaries are carved into the surface itself, without tube meshes.
+    if (g.edges.length && this.worldStyle !== "tiny" && this.worldStyle !== "jelly") {
       const pos: number[] = [];
       for (const [a, b] of g.edges) {
         if(bridges.has(edgeId(a,b))) continue;
@@ -485,12 +526,6 @@ export class KidsBall {
         }
         const va = vertsMm[a], vb = vertsMm[b];
         if (!va || !vb) continue;
-        if (this.worldStyle === "jelly") {
-          const edge = edgeOwners.get(a < b ? `${a},${b}` : `${b},${a}`);
-          if (edge?.faces.length === 2 && facePaints[edge.faces[0]] === facePaints[edge.faces[1]]) continue;
-          this.addJellySeam(va, vb, a, b);
-          continue;
-        }
         const A = onSphere(va, R * 1.004), B = onSphere(vb, R * 1.004);
         const segs = Math.max(1, Math.round(len(sub(B, A)) / (R * 0.12)));
         let prev = A;
@@ -586,9 +621,9 @@ export class KidsBall {
   private jellyMaterial(color: number) {
     const material = new THREE.MeshPhysicalMaterial({
       color,
-      roughness: 0.28,
+      roughness: 0.18,
       clearcoat: 0.9,
-      clearcoatRoughness: 0.16,
+      clearcoatRoughness: 0.1,
       transmission: 0,
       thickness: 1.25,
       ior: 1.36,
@@ -735,14 +770,6 @@ export class KidsBall {
     texture.anisotropy = Math.min(4, this.renderer.capabilities.getMaxAnisotropy());
     this.terrainTextures.set(terrain, texture);
     return texture;
-  }
-
-  private addJellySeam(a: Vec3, b: Vec3, aIndex: number, bIndex: number) {
-    const points = this.organicEdge(a,b,aIndex,bIndex).map(p => new THREE.Vector3(...onSphere(p,R*1.003)));
-    const segments = points.length;
-    const curve = new THREE.CatmullRomCurve3(points);
-    const tube = new THREE.TubeGeometry(curve, segments * 2, .6, 6, false);
-    this.group.add(new THREE.Mesh(tube, this.jellyMaterial(0xfcbecf)));
   }
 
   private edgeAnchor(a: Vec3, b: Vec3) {
@@ -1237,6 +1264,7 @@ export class KidsBall {
 
   private onDown(e: PointerEvent) {
     if (this.tool === "move") return; // let OrbitControls handle it
+    if (this.pendingWorker) return;
     this.setNdc(e);
     this.raycaster.setFromCamera(this.ndc, this.camera);
     if (this.tool === "paint") {
@@ -1266,6 +1294,7 @@ export class KidsBall {
     const height = this.renderer.domElement.getBoundingClientRect().height;
     const distance = this.camera.position.distanceTo(new THREE.Vector3(...p));
     this.strokeStep = THREE.MathUtils.clamp(distance * 2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)) / height / R * 1.5,.0005,.008);
+    this.brushRadius=THREE.MathUtils.clamp(this.strokeStep/1.5*this.brushWidth/2,.003,.12);
     this.controls.enabled = false;
     this.updatePreview();
   }
@@ -1309,20 +1338,59 @@ export class KidsBall {
     this.activePointerId = undefined;
     if (this.renderer.domElement.hasPointerCapture(e.pointerId)) this.renderer.domElement.releasePointerCapture(e.pointerId);
     this.controls.enabled = true;
-    this.removePreview();
     const pts = this.strokePts.map((p) => [...normalize(p)]);
     this.strokePts = [];
-    if (cancelled || pts.length < 2) return;
-    this.history.push(this.editState());
+    if (cancelled || pts.length < (this.tool==="brush"?1:2)) {this.removePreview();return;}
     const close = pts.length >= 6 && Math.hypot(e.clientX-this.strokeStart.x,e.clientY-this.strokeStart.y)<=14;
-    const edited = drawBorder(this.graph,Object.fromEntries(this.paintByFace),pts,close,this.strokeStep,this.selectedPaint);
-    this.graph=edited.graph;
-    this.paintByFace=new Map(Object.entries(edited.paints) as [string,PaintKind][]);
-    if (this.worldStyle === "jelly") this.triggerJellyImpact(new THREE.Vector3(pts[pts.length - 1][0], pts[pts.length - 1][1], pts[pts.length - 1][2]), 1.15);
-    this.render();
+    const request:EditRequest={graph:this.graph,paints:Object.fromEntries(this.paintByFace),points:pts,close,step:this.strokeStep,paint:this.selectedPaint,brushRadius:this.tool==="brush"?this.brushRadius:undefined};
+    try {
+      const worker=new Worker(new URL("../world/editWorker.ts",import.meta.url),{type:"module"});
+      this.pendingWorker=worker;
+      this.container.dispatchEvent(new CustomEvent("world-processing",{detail:"Incorporando trazo…"}));
+      const fail=(message:string)=>{if(this.pendingWorker!==worker)return;this.cancelPendingEdit();this.container.dispatchEvent(new CustomEvent("world-processing",{detail:message}));};
+      worker.onerror=()=>fail("No se pudo incorporar el trazo. Tu mundo sigue intacto.");
+      worker.onmessage=(event:MessageEvent<{edit?:BorderEdit;error?:string}>)=>{
+        if(this.pendingWorker!==worker)return;
+        if(!event.data.edit){fail("No se pudo incorporar el trazo. Probá uno más corto.");return;}
+        this.history.push(this.editState());
+        const edited=event.data.edit;
+        this.graph=edited.graph;this.paintByFace=new Map(Object.entries(edited.paints) as [string,PaintKind][]);
+        this.cancelPendingEdit();
+        try {this.render();} catch {this.container.dispatchEvent(new CustomEvent("world-processing",{detail:"No se pudo dibujar el cambio. Tu mundo anterior se conservó."}));}
+        if(this.worldStyle==="jelly")this.triggerJellyImpact(new THREE.Vector3().fromArray(pts[pts.length-1]),1.15);
+      };
+      worker.postMessage(request);
+    } catch {this.cancelPendingEdit();this.container.dispatchEvent(new CustomEvent("world-processing",{detail:"No se pudo iniciar el trazo. Tu mundo sigue intacto."}));}
+  }
+
+  private cancelPendingEdit() {
+    this.pendingWorker?.terminate();this.pendingWorker=undefined;this.removePreview();
+    this.container.dispatchEvent(new CustomEvent("world-processing",{detail:""}));
   }
 
   private updatePreview() {
+    if(this.tool==="brush") {
+      const pos:number[]=[], radius=this.brushRadius;
+      const rings=this.strokePts.map(raw=>{
+        const n=new THREE.Vector3(...raw).normalize();
+        const side=new THREE.Vector3(Math.abs(n.x)<.9?1:0,Math.abs(n.x)<.9?0:1,0).cross(n).normalize();
+        const up=n.clone().cross(side);
+        const ring=Array.from({length:16},(_,i)=>n.clone().multiplyScalar(Math.cos(radius)).addScaledVector(side,Math.sin(radius)*Math.cos(i*Math.PI/8)).addScaledVector(up,Math.sin(radius)*Math.sin(i*Math.PI/8)).multiplyScalar(R+.7));
+        for(let i=0;i<16;i++)pos.push(...n.clone().multiplyScalar(R+.7).toArray(),...ring[i].toArray(),...ring[(i+1)%16].toArray());
+        return n;
+      });
+      for(let i=1;i<rings.length;i++) {
+        const a=rings[i-1],b=rings[i],side=a.clone().cross(b).normalize();
+        const corner=(p:THREE.Vector3,s:number)=>p.clone().multiplyScalar(Math.cos(radius)).addScaledVector(side,s*Math.sin(radius)).multiplyScalar(R+.7).toArray();
+        const al=corner(a,1),ar=corner(a,-1),bl=corner(b,1),br=corner(b,-1);
+        pos.push(...al,...ar,...bl,...ar,...br,...bl);
+      }
+      if(!this.preview){this.preview=new THREE.Mesh(new THREE.BufferGeometry(),this.brushPreviewMaterial);this.preview.renderOrder=999;this.scene.add(this.preview);}
+      this.brushPreviewMaterial.color.setHex(PAINT_COLORS[this.selectedPaint]);
+      this.preview.geometry.dispose();this.preview.geometry=new THREE.BufferGeometry();
+      this.preview.geometry.setAttribute("position",new THREE.Float32BufferAttribute(pos,3));
+      return;
+    }
     if (this.strokePts.length < 2) return;
     const pos: number[] = [];
     for (const q of this.strokePts) { const p = onSphere(q, R * 1.002); pos.push(p[0], p[1], p[2]); }
@@ -1331,6 +1399,7 @@ export class KidsBall {
       this.preview.renderOrder = 999;
       this.scene.add(this.preview);
     }
+    this.preview.geometry.dispose();this.preview.geometry=new THREE.BufferGeometry();
     this.preview.geometry.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
     this.preview.geometry.computeBoundingSphere();
   }

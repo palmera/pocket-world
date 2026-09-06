@@ -5,7 +5,8 @@ import "./world.css";
 const icons: Record<string,string> = {
   "t-move": '<circle cx="12" cy="12" r="7"/><path d="M5 12h14M12 5c4 4 4 10 0 14-4-4-4-10 0-14"/>',
   "t-draw": '<path d="m5 16-1 4 4-1L20 7l-3-3Z M14 7l3 3"/>',
-  "t-paint": '<path d="m9 13 8-9 3 3-9 8M10 14c-5-2-3 5-7 5 7 3 10-2 7-5Z"/>',
+  "t-paint": '<path d="m5 5 10 10-6 6-8-8 10-10 8 8H4M5 2l6 6M20 13s-3 4-3 6a3 3 0 0 0 6 0c0-2-3-6-3-6Z"/>',
+  "t-brush": '<path d="m9 13 8-9 3 3-9 8M10 14c-5-2-3 5-7 5 7 3 10-2 7-5Z"/>',
   "a-random": '<rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 8h.01M16 16h.01M12 12h.01" stroke-width="3"/>',
   "a-undo": '<path d="M8 5 3 10l5 5M3 10h10a6 6 0 0 1 0 12"/>',
   "a-redo": '<path d="m16 5 5 5-5 5m5-5h-10a6 6 0 0 0 0 12"/>',
@@ -64,6 +65,7 @@ const toolBtns: Record<KidTool, HTMLElement> = {
   move: document.getElementById("t-move") as HTMLElement,
   draw: document.getElementById("t-draw") as HTMLElement,
   paint: document.getElementById("t-paint") as HTMLElement,
+  brush: document.getElementById("t-brush") as HTMLElement,
 };
 let activeTool: KidTool = "move";
 function selectTool(t: KidTool) {
@@ -71,8 +73,15 @@ function selectTool(t: KidTool) {
   ball.setTool(t);
   (Object.keys(toolBtns) as KidTool[]).forEach((k) => toolBtns[k].classList.toggle("on", k === t));
   (Object.keys(toolBtns) as KidTool[]).forEach((k) => toolBtns[k].setAttribute("aria-pressed", String(k === t)));
-  hint.textContent = t === "move" ? "Drag to turn · Pinch to discover" : t === "draw" ? "Choose a terrain · Close a loop or cut across a place" : "Choose a color. Touch a place.";
+  document.getElementById("brush-options")!.hidden=t!=="brush";
+  hint.textContent = t === "move" ? "Drag to turn · Pinch to discover" : t === "draw" ? "Choose a terrain · Close a loop or cut across a place" : t==="brush" ? "Pintá una franja · Elegí color y grosor" : "Balde · Tocá una región para rellenarla";
 }
+document.getElementById("brush-width")!.addEventListener("input",event=>{
+  const width=Number((event.target as HTMLInputElement).value);ball.setBrushWidth(width);
+  document.getElementById("brush-size")!.textContent=`${width} px`;
+});
+const processing=document.createElement("div");processing.id="processing";processing.setAttribute("role","status");document.getElementById("app")!.appendChild(processing);
+document.getElementById("ball")!.addEventListener("world-processing",event=>{processing.textContent=(event as CustomEvent<string>).detail;});
 (Object.keys(toolBtns) as KidTool[]).forEach((t) => toolBtns[t].addEventListener("click", () => selectTool(t)));
 
 const PAINT_SETS: Record<WorldStyle, { icon: string; label: string; color: string; paint: PaintKind }[]> = {
@@ -113,7 +122,7 @@ function applyWorldUi(style: WorldStyle) {
   caption.innerHTML = `${style === "tiny" ? "The living collection" : style === "jelly" ? "The candy collection" : "The creative collection"}<strong>${names[style]}</strong>`;
   const tools = worldToolCopy[style];
   document.getElementById("draw-label")!.textContent = tools.draw;
-  document.getElementById("paint-label")!.textContent = tools.paint;
+  document.getElementById("paint-label")!.textContent = "Balde";
   const set = PAINT_SETS[style];
   paintBtns.forEach((btn, i) => {
     const tool = set[i];
@@ -132,7 +141,7 @@ function applyWorldUi(style: WorldStyle) {
 }
 paintBtns.forEach((btn) => btn.addEventListener("click", () => {
   ball.setPaint(btn.dataset.paint as PaintKind);
-  selectTool(activeTool === "draw" ? "draw" : "paint");
+  selectTool(activeTool === "draw" || activeTool === "brush" ? activeTool : "paint");
   paintBtns.forEach((item) => item.classList.toggle("selected", item === btn));
 }));
 
