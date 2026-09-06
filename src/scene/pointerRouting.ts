@@ -1,4 +1,7 @@
 export type InputMode = "hand" | "pen";
+export function spaceCanControlCamera(target: EventTarget | null): boolean {
+  return !(target && "closest" in target && (target as Element).closest('input,textarea,select,button,a,[contenteditable]:not([contenteditable="false"]),[role="dialog"],[role="button"],[role="slider"]'));
+}
 type Owner = "camera" | "edit" | "ignore";
 
 // One owner per physical gesture. OrbitControls must never see editing pointers.

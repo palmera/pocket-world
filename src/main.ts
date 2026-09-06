@@ -74,7 +74,7 @@ function selectTool(t: KidTool) {
   (Object.keys(toolBtns) as KidTool[]).forEach((k) => toolBtns[k].classList.toggle("on", k === t));
   (Object.keys(toolBtns) as KidTool[]).forEach((k) => toolBtns[k].setAttribute("aria-pressed", String(k === t)));
   document.getElementById("brush-options")!.hidden=t!=="brush";
-  hint.textContent = t === "move" ? "Drag to turn · Pinch to discover" : t === "draw" ? "Choose a terrain · Close a loop or cut across a place" : t==="brush" ? "Pintá una franja · Elegí color y grosor" : "Balde · Tocá una región para rellenarla";
+  hint.textContent = t === "move" ? "Drag to turn · Pinch to discover" : t === "draw" ? "Acercá los extremos para cerrar · Espacio + arrastrar: cámara" : t==="brush" ? "Pintá una franja · Espacio + arrastrar: cámara" : "Balde · Tocá una región · Espacio + arrastrar: cámara";
 }
 document.getElementById("brush-width")!.addEventListener("input",event=>{
   const width=Number((event.target as HTMLInputElement).value);ball.setBrushWidth(width);

@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { PointerRouting, type InputMode } from "./pointerRouting";
+import { PointerRouting, spaceCanControlCamera, type InputMode } from "./pointerRouting";
+import { nearbyBorder, shouldCloseBorder, visibleSnapEdges } from "./borderSnap";
+import { planPopulation } from "../world/population";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { bakeToy, heroModel, makePerson, sceneryModel } from "./worldArt";
 import { disposeExcept, FrameCache, joinFloat32 } from "./renderResources";
@@ -15,7 +17,7 @@ import { paintRegion } from "../world/paintRegion";
 import { WORLD_SAVE_VERSION, shouldSeedLegacyWorld } from "../world/saveFormat";
 import { History } from "../engine/editor/history";
 import { ECOSYSTEMS, borderStoryFor, type BorderStory, type EcosystemDetail } from "../world/ecosystems";
-import { findTerrainBorderContacts, findTerrainHabitats, isTerrain, panelKey as faceKey } from "../world/habitats";
+import { findTerrainBorderContacts, isTerrain, panelKey as faceKey } from "../world/habitats";
 import { createRandomWorld } from "../world/randomWorld";
 import { createBasicBehaviourEngine, type AnimatedDetail, type BehaviourEngine } from "../world/behaviours";
 
@@ -99,6 +101,9 @@ export class KidsBall {
   private activePointerId?: number;
   private strokePts: Vec3[] = [];
   private strokeStart = new THREE.Vector2();
+  private spaceCamera = false;
+  private snapEdges: [number,number][] = [];
+  private snapGuide?: THREE.Group;
   private strokeStep = .004;
   private preview?: THREE.Line | THREE.Mesh;
   private brushWidth = 24;
@@ -187,10 +192,23 @@ export class KidsBall {
     window.addEventListener("resize", () => this.onResize());
     const el = this.renderer.domElement;
     el.style.touchAction = "none";
+    el.tabIndex = 0;
+    el.title = "Mantené Espacio y arrastrá para mover la cámara";
+    const releaseSpace=()=>{this.spaceCamera=false;el.style.cursor="";};
+    window.addEventListener("keydown",e=>{
+      if(e.code==="Space" && this.spaceCamera){e.preventDefault();return;}
+      if(e.code!=="Space" || e.repeat || !spaceCanControlCamera(e.target) || e.ctrlKey || e.metaKey || e.altKey)return;
+      e.preventDefault();this.spaceCamera=true;el.style.cursor="grab";
+      this.pointers.cancelEdit();this.cancelStroke();
+    });
+    window.addEventListener("keyup",e=>{if(e.code==="Space"){if(this.spaceCamera)e.preventDefault();releaseSpace();}});
+    window.addEventListener("blur",()=>{releaseSpace();this.pointers.cancelEdit();this.cancelStroke();});
+    document.addEventListener("visibilitychange",()=>{if(document.hidden)releaseSpace();});
     // Capture runs BEFORE OrbitControls' bubble listeners, regardless of the
     // order in which they were installed. Pen strokes cannot rotate the camera.
     el.addEventListener("pointerdown", (e) => {
-      const route=this.pointers.down(e.pointerId,e.pointerType,this.tool,this.inputMode);
+      el.focus({preventScroll:true});
+      const route=this.pointers.down(e.pointerId,e.pointerType,this.spaceCamera?"move":this.tool,this.inputMode);
       if(route.cancelled !== undefined) this.cancelStroke();
       if(route.owner === "camera") return;
       e.stopImmediatePropagation();
@@ -550,18 +568,18 @@ export class KidsBall {
       const inkGeometry = new THREE.BufferGeometry();
       inkGeometry.setAttribute("position",new THREE.Float32BufferAttribute(ink,3));
       this.group.add(new THREE.LineSegments(inkGeometry,new THREE.LineBasicMaterial({color:0xfff6dc,transparent:true,opacity:.9})));
-      faces.forEach((face, fi) => {
-        const terrain = this.paintByFace.get(faceKey(face));
-        if (!isTerrain(terrain)) return;
-        const center = new THREE.Vector3();
-        face.forEach((index) => center.add(new THREE.Vector3(...g.verts[index])));
-        center.normalize();
-        center.lerp(new THREE.Vector3(...g.verts[face[fi % face.length]]), .32).normalize();
+      const population=planPopulation(faces,g.verts,edgeOwners.values(),this.paintByFace);
+      population.placements.forEach(({point,terrain,slot,kind},fi) => {
+        if(kind==="resident") {
+          this.addTerrainDetail(ECOSYSTEMS[terrain][slot],[0],[point],slot,1);
+          return;
+        }
+        const center = new THREE.Vector3(...point);
         const anchor = new THREE.Group();
         anchor.position.copy(center).multiplyScalar(R + .35);
         anchor.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),center);
-        const scenery = this.toyModels.get(`scenery:${terrain}:${fi}`,()=>sceneryModel(terrain,fi)).clone(true);
-        scenery.scale.setScalar(terrain === "water" ? 6 : 6.5 + (fi % 4) * 1.25);
+        const scenery = this.toyModels.get(`scenery:${terrain}:${slot%4}`,()=>sceneryModel(terrain,slot%4)).clone(true);
+        scenery.scale.setScalar(terrain === "water" ? 6 : 7);
         scenery.rotation.y = fi * 2.399;
         anchor.add(scenery);
         this.addContactShadow(anchor, terrain === "water" ? 0 : 7);
@@ -584,10 +602,10 @@ export class KidsBall {
         const right = facePaints[contact.rightFace];
         if (isTerrain(left) && isTerrain(right) && left !== right) {
           const story = borderStoryFor(left, right);
-          if (story) this.addBorderStory(story, vertsMm[contact.a], vertsMm[contact.b]);
+          const midpoint=new THREE.Vector3(...g.verts[contact.a]).add(new THREE.Vector3(...g.verts[contact.b])).normalize().toArray();
+          if (story && population.space.reserve(midpoint,.17)) this.addBorderStory(story, vertsMm[contact.a], vertsMm[contact.b]);
         }
       }
-      this.addTerrainLife(faces, edgeOwners, g);
     }
   }
 
@@ -874,31 +892,6 @@ export class KidsBall {
     scene.scale.setScalar(3.6);
     icon.add(scene);
     this.animatedDetails.push({ object: scene, base: scene.position.clone(), baseScale: scene.scale.clone(), baseRotation: scene.rotation.clone(), phase: a[0] * 0.41 + b[1] * 0.67, amount: 0.34, motion: story.motion });
-  }
-
-  // Adjacent faces painted with the same terrain form one habitat. Its spherical
-  // area, not its number of polygons, controls how many catalogue scenes wake up.
-  private addTerrainLife(
-    faces: number[][],
-    edgeOwners: Map<string, { a: number; b: number; faces: number[] }>,
-    graph: FreeGraph,
-  ) {
-    const habitats = findTerrainHabitats(faces, graph.verts, edgeOwners.values(), this.paintByFace);
-    for (const habitat of habitats) {
-      const occupied = new Set<number>();
-      for (let slot = 0; slot < habitat.unlockedScenes; slot++) {
-        const fi = habitat.faces[Math.floor(slot * habitat.faces.length / habitat.unlockedScenes)];
-        occupied.add(fi);
-        this.addTerrainDetail(ECOSYSTEMS[habitat.terrain][slot], faces[fi], graph.verts, slot, habitat.unlockedScenes);
-      }
-      // Residents repeat only already-unlocked stories, filling empty territory
-      // without changing the area-based discovery progression or saved data.
-      habitat.faces.forEach((fi, index) => {
-        if (occupied.has(fi) || index % 2) return;
-        const slot = index % Math.min(3, habitat.unlockedScenes);
-        this.addTerrainDetail(ECOSYSTEMS[habitat.terrain][slot], faces[fi], graph.verts, index, habitat.unlockedScenes);
-      });
-    }
   }
 
   private addTerrainDetail(detail: EcosystemDetail, face: number[], verts: number[][], slot: number, count: number) {
@@ -1290,6 +1283,11 @@ export class KidsBall {
     this.activePointerId = e.pointerId;
     this.drawing = true;
     this.strokePts = [p];
+    if(this.tool==="draw") {
+      this.snapEdges=visibleSnapEdges(this.graph,this.paintByFace);
+      const start=nearbyBorder([...normalize(p)],this.graph,this.snapEdges,q=>this.projectSnapPoint(q));
+      if(start)this.strokePts=[onSphere([start[0],start[1],start[2]],R)];
+    }
     this.strokeStart.set(e.clientX,e.clientY);
     const height = this.renderer.domElement.getBoundingClientRect().height;
     const distance = this.camera.position.distanceTo(new THREE.Vector3(...p));
@@ -1339,9 +1337,13 @@ export class KidsBall {
     if (this.renderer.domElement.hasPointerCapture(e.pointerId)) this.renderer.domElement.releasePointerCapture(e.pointerId);
     this.controls.enabled = true;
     const pts = this.strokePts.map((p) => [...normalize(p)]);
+    const close = this.tool==="draw" && shouldCloseBorder(pts,q=>this.projectSnapPoint(q));
+    if(this.tool==="draw" && !close && pts.length>1) {
+      const end=nearbyBorder(pts.at(-1)!,this.graph,this.snapEdges,q=>this.projectSnapPoint(q));
+      if(end)pts[pts.length-1]=end;
+    }
     this.strokePts = [];
     if (cancelled || pts.length < (this.tool==="brush"?1:2)) {this.removePreview();return;}
-    const close = pts.length >= 6 && Math.hypot(e.clientX-this.strokeStart.x,e.clientY-this.strokeStart.y)<=14;
     const request:EditRequest={graph:this.graph,paints:Object.fromEntries(this.paintByFace),points:pts,close,step:this.strokeStep,paint:this.selectedPaint,brushRadius:this.tool==="brush"?this.brushRadius:undefined};
     try {
       const worker=new Worker(new URL("../world/editWorker.ts",import.meta.url),{type:"module"});
@@ -1402,8 +1404,33 @@ export class KidsBall {
     this.preview.geometry.dispose();this.preview.geometry=new THREE.BufferGeometry();
     this.preview.geometry.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
     this.preview.geometry.computeBoundingSphere();
+    this.updateSnapGuide();
   }
-  private removePreview() { if (this.preview) { this.scene.remove(this.preview); this.preview.geometry.dispose(); this.preview = undefined; } }
+  private projectSnapPoint(point:number[]) {
+    const world=new THREE.Vector3(...point).normalize().multiplyScalar(R);
+    if(world.dot(this.camera.position.clone().sub(world))<=0)return;
+    const projected=world.project(this.camera),rect=this.renderer.domElement.getBoundingClientRect();
+    return {x:(projected.x+1)*rect.width/2,y:(1-projected.y)*rect.height/2};
+  }
+  private clearSnapGuide() {
+    if(!this.snapGuide)return;
+    this.scene.remove(this.snapGuide);disposeExcept(this.snapGuide);this.snapGuide=undefined;
+  }
+  private updateSnapGuide() {
+    this.clearSnapGuide();
+    const points=this.strokePts.map(p=>[...normalize(p)]),last=points.at(-1);
+    if(!last)return;
+    const target=shouldCloseBorder(points,q=>this.projectSnapPoint(q))?points[0]:nearbyBorder(last,this.graph,this.snapEdges,q=>this.projectSnapPoint(q));
+    if(!target)return;
+    const group=new THREE.Group(),a=new THREE.Vector3(...last),b=new THREE.Vector3(...target);
+    const bridge=Array.from({length:13},(_,i)=>a.clone().lerp(b,i/12).normalize().multiplyScalar(R*1.004));
+    const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints(bridge),new THREE.LineDashedMaterial({color:0xffdd65,dashSize:1,gapSize:.7,depthTest:false}));
+    line.computeLineDistances();line.renderOrder=1000;group.add(line);
+    const marker=new THREE.Mesh(new THREE.RingGeometry(1.2,1.8,24),new THREE.MeshBasicMaterial({color:0xffdd65,side:THREE.DoubleSide,depthTest:false}));
+    marker.position.copy(b).multiplyScalar(R*1.005);marker.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),b);marker.renderOrder=1001;group.add(marker);
+    this.snapGuide=group;this.scene.add(group);
+  }
+  private removePreview() { this.clearSnapGuide();if (this.preview) { this.scene.remove(this.preview); this.preview.geometry.dispose(); this.preview = undefined; } }
 
   private onResize() {
     // The browser may expose a high-density backing-store width through
