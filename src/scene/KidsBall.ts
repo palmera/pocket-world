@@ -3,26 +3,31 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { PointerRouting, spaceCanControlCamera, type InputMode } from "./pointerRouting";
 import { nearbyBorder, shouldCloseBorder, visibleSnapEdges } from "./borderSnap";
 import { planPopulation } from "../world/population";
+import { PopulationSpace } from "../world/population";
+import { advanceLivingWorld, createLivingState, livingStage, recordWorldEdit, type LivingState } from "../world/livingWorld";
+import { applyReliefStroke, createReliefSampler, sanitizeRelief, RELIEF_LIMITS, type ReliefMode, type ReliefStamp } from "../world/relief";
+import { createReliefFeature, animateReliefFeature, selectReliefFeatures, refineReliefMesh } from "./reliefArt";
+import { ecosystemForTerrain } from "../world/contentPacks";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-import { bakeToy, heroModel, makePerson, sceneryModel } from "./worldArt";
+import { strategyModel, naturalSceneryModel } from "./worldArt";
 import { disposeExcept, FrameCache, joinFloat32 } from "./renderResources";
 import { createJellyMeniscus } from "./jellyMeniscus";
 import { Vec3, normalize, sub, dot, cross, len, onSphere } from "../engine/geometry/vec";
 import { extractSphereFaces } from "../engine/freestyle/sphereGraph";
 import { type FreeGraph } from "../engine/freestyle/freestyleGraph";
-import { triangulateRegion } from "../engine/freestyle/sphereRegions";
+import { regionContainsPoint, triangulateRegion } from "../engine/freestyle/sphereRegions";
 import type { BorderEdit } from "../world/drawBorder";
 import type { EditRequest } from "../world/editWorker";
 import { paintRegion } from "../world/paintRegion";
 import { WORLD_SAVE_VERSION, shouldSeedLegacyWorld } from "../world/saveFormat";
 import { History } from "../engine/editor/history";
-import { ECOSYSTEMS, borderStoryFor, type BorderStory, type EcosystemDetail } from "../world/ecosystems";
+import { borderStoryFor, type BorderStory, type EcosystemDetail } from "../world/ecosystems";
 import { findTerrainBorderContacts, isTerrain, panelKey as faceKey } from "../world/habitats";
 import { createRandomWorld } from "../world/randomWorld";
 import { createBasicBehaviourEngine, type AnimatedDetail, type BehaviourEngine } from "../world/behaviours";
 
-export type KidTool = "draw" | "paint" | "brush" | "move";
-export type Biome = "meadow" | "water" | "sand" | "lava" | "stone";
+export type KidTool = "draw" | "paint" | "brush" | "move" | "relief";
+export type Biome = "meadow" | "water" | "sand" | "lava" | "stone" | "forest" | "wetland" | "snow";
 export type WorldStyle = "blank" | "doodle" | "jelly" | "tiny";
 export type PaintKind = Biome | "red-crayon" | "blue-crayon" | "yellow-crayon" | "purple-crayon" | "green-crayon" | "strawberry" | "blueberry" | "lemon" | "grape" | "lime" | "charcoal" | "sky" | "sun" | "rose" | "mint";
 
@@ -33,14 +38,18 @@ export const KID_PALETTE = [
 ];
 
 type JellyShader = { uniforms: Record<string, { value: unknown }> };
-type EditState = { graph: FreeGraph; paints: Record<string,PaintKind> };
+type EditState = { graph: FreeGraph; paints: Record<string,PaintKind>; relief?: ReliefStamp[] };
+type LifeContext = {faces:number[][];edgeOwners:Map<string,{a:number;b:number;faces:number[]}>;vertsMm:Vec3[]};
 
 const BIOME_COLORS: Record<Biome, number> = {
-  meadow: 0x9bcf8c,
-  water: 0x42aaa9,
-  sand: 0xf2cc98,
-  lava: 0xd37d70,
-  stone: 0x9fa9c2,
+  meadow: 0x788653,
+  water: 0x356b75,
+  sand: 0xbfa573,
+  lava: 0x69534a,
+  stone: 0x82867b,
+  forest: 0x405d46,
+  wetland: 0x5d7c6d,
+  snow: 0xc3c9c4,
 };
 
 const PAINT_COLORS: Record<string, number> = {
@@ -114,9 +123,22 @@ export class KidsBall {
   private raycaster = new THREE.Raycaster();
   private ndc = new THREE.Vector2();
   private onChange?: () => void;
+  private living: LivingState = createLivingState();
+  private relief: ReliefStamp[] = [];
+  private reliefMode: ReliefMode = "raise";
+  private reliefSize = 80;
+  private reliefStrength = 2.5;
+  private reliefSampler = createReliefSampler([]);
+  private lifeGroup = new THREE.Group();
+  private lifeContext?: LifeContext;
+  private evolutionDirty = false;
+  private progressTick = 0;
+  private weatherDetails: THREE.Group[] = [];
+  private reducedMotion = false;
 
   constructor(container: HTMLElement) {
     this.container = container;
+    this.reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     this.scene.background = new THREE.Color(0x050814);
 
     this.camera = new THREE.PerspectiveCamera(45, 1, 1, 5000);
@@ -144,8 +166,8 @@ export class KidsBall {
 
     // A warm, broad key and cool sky bounce make the planet feel like a small
     // treasured object, rather than a technical map under neutral studio light.
-    this.scene.add(new THREE.HemisphereLight(0xfff3db, 0x788fc2, 1.15));
-    const key = new THREE.DirectionalLight(0xffedd6, 2.3);
+    this.scene.add(new THREE.HemisphereLight(0xe7e9d9, 0x424b56, 1.05));
+    const key = new THREE.DirectionalLight(0xffecd0, 2.0);
     key.position.set(-220, 300, 340);
     key.castShadow = true;
     key.shadow.mapSize.set(1024, 1024);
@@ -245,9 +267,18 @@ export class KidsBall {
   setInputMode(mode: InputMode) { this.pointers.cancelEdit(); this.cancelStroke(); this.inputMode=mode; }
   setPaint(paint: PaintKind) { this.selectedPaint = paint; }
   setBrushWidth(width:number) { this.brushWidth=THREE.MathUtils.clamp(width,12,60); }
+  setReliefMode(mode:ReliefMode) {this.reliefMode=mode;}
+  setReliefSize(size:number) {this.reliefSize=THREE.MathUtils.clamp(size,32,160);}
+  setReliefStrength(strength:number) {this.reliefStrength=THREE.MathUtils.clamp(strength,.5,5);}
+  getLivingState():LivingState {return structuredClone(this.living);}
+  setWorldSpeed(speed:0|1|3) {this.living.speed=speed;this.notifyLiving();}
+  setLifeDensity(density:LivingState["density"]) {this.living.density=density;this.evolutionDirty=true;this.notifyLiving();}
+  private notifyLiving() {this.container?.dispatchEvent(new CustomEvent("world-living",{detail:this.getLivingState()}));}
+  private completeWorldEdit() {if(recordWorldEdit(this.living).length)this.evolutionDirty=true;this.notifyLiving();this.onChange?.();}
   setBehaviourEngine(engine: BehaviourEngine) { this.behaviourEngine = engine; }
   getWorldStyle() { return this.worldStyle; }
   setWorldStyle(style: WorldStyle) {
+    this.pointers.cancelEdit();this.cancelStroke();
     this.cancelPendingEdit();
     this.worldStyle = style;
     this.resetJellyPhysics();
@@ -255,9 +286,12 @@ export class KidsBall {
     this.render();
   }
   newWorld(style: WorldStyle) {
+    this.pointers.cancelEdit();this.cancelStroke();
     this.cancelPendingEdit();
     this.history.clear();
     this.worldStyle = style;
+    this.relief=[];this.reliefSampler=createReliefSampler([]);
+    this.living=createLivingState({...this.living,elapsed:0,edits:0});
     this.resetJellyPhysics();
     this.selectedPaint = defaultPaint(style);
     if (style === "jelly" || style === "tiny") {
@@ -283,6 +317,7 @@ export class KidsBall {
     this.history.push(this.editState());
     this.graph={verts:[],edges:[]};
     this.paintByFace.clear();
+    this.relief=[];this.reliefSampler=createReliefSampler([]);
     this.frameWorld();
     this.render();
   }
@@ -292,12 +327,17 @@ export class KidsBall {
       graph: this.getGraph(),
       paints: Object.fromEntries(this.paintByFace),
       style: this.worldStyle,
+      relief: this.relief,
+      living: this.living,
     };
   }
   loadSaveData(data: unknown) {
+    this.pointers?.cancelEdit();if(this.renderer)this.cancelStroke();
     this.cancelPendingEdit();
-    const saved = data as { version?: number; graph?: FreeGraph; paints?: Record<string, PaintKind>; biomes?: Record<string, Biome>; style?: WorldStyle };
+    const saved = data as { version?: number; graph?: FreeGraph; paints?: Record<string, PaintKind>; biomes?: Record<string, Biome>; style?: WorldStyle; relief?:unknown; living?:unknown };
     if (!saved?.graph || !Array.isArray(saved.graph.verts) || !Array.isArray(saved.graph.edges)) return false;
+    if(saved.style!==undefined && !["blank","doodle","jelly","tiny"].includes(saved.style))return false;
+    this.history?.clear();
     // Upgrade an old empty Jelly/Tiny save into the new playable starter world.
     // A child can still replace it at any time with the Random button.
     if (shouldSeedLegacyWorld({...saved,graph:saved.graph})) {
@@ -307,6 +347,10 @@ export class KidsBall {
     this.graph = JSON.parse(JSON.stringify(saved.graph));
     this.paintByFace = new Map(Object.entries(saved.paints ?? saved.biomes ?? {}));
     this.worldStyle = saved.style ?? "tiny";
+    this.relief=sanitizeRelief(saved.relief);this.reliefSampler=createReliefSampler(this.relief);
+    this.living=createLivingState(saved.living);
+    // Unknown packs or old progression must never make a painted biome unusable.
+    for(const paint of this.paintByFace.values())if(isTerrain(paint) && !this.living.unlocked.includes(paint))this.living.unlocked.push(paint);
     this.resetJellyPhysics();
     this.selectedPaint = defaultPaint(this.worldStyle);
     this.applyWorldBackground();
@@ -318,8 +362,8 @@ export class KidsBall {
     const canvas = document.createElement("canvas"); canvas.width = canvas.height = 512;
     const ctx = canvas.getContext("2d")!;
     const gradient = ctx.createRadialGradient(240,220,30,256,256,350);
-    gradient.addColorStop(0, dark ? this.worldStyle === "jelly" ? "#443053" : "#274552" : "#fffcf3");
-    gradient.addColorStop(1, dark ? "#111b2b" : "#dedacb");
+    gradient.addColorStop(0, dark ? this.worldStyle === "jelly" ? "#443053" : "#353f38" : "#fffcf3");
+    gradient.addColorStop(1, dark ? this.worldStyle === "tiny" ? "#151e21" : "#111b2b" : "#dedacb");
     ctx.fillStyle = gradient; ctx.fillRect(0,0,512,512);
     if (this.scene.background instanceof THREE.Texture) this.scene.background.dispose();
     const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
@@ -377,14 +421,16 @@ export class KidsBall {
     return Math.max(R*3.2, R / Math.sin(limitingFov) * 1.17);
   }
   getGraph(): FreeGraph { return JSON.parse(JSON.stringify(this.graph)); }
-  private editState(): EditState { return {graph:this.graph,paints:Object.fromEntries(this.paintByFace)}; }
+  private editState(): EditState { return {graph:this.graph,paints:Object.fromEntries(this.paintByFace),relief:this.relief}; }
   private restoreEdit(state: EditState) {
     this.graph=state.graph;
     this.paintByFace=new Map(Object.entries(state.paints));
+    this.relief=state.relief??[];this.reliefSampler=createReliefSampler(this.relief);
     this.render();
   }
 
   setGraph(g: FreeGraph, pushHistory = true) {
+    this.pointers?.cancelEdit();if(this.renderer)this.cancelStroke();
     this.cancelPendingEdit();
     if (pushHistory) this.history.push(this.editState());
     this.graph = JSON.parse(JSON.stringify(g));
@@ -393,8 +439,8 @@ export class KidsBall {
 
   clear() { this.setGraph({ verts: [], edges: [] }); }
 
-  undo() { if(this.pendingWorker) {this.cancelPendingEdit();return;} const r = this.history.undo(this.editState()); if (r) this.restoreEdit(r); }
-  redo() { this.cancelPendingEdit(); const r = this.history.redo(this.editState()); if (r) this.restoreEdit(r); }
+  undo() {this.pointers?.cancelEdit();if(this.renderer)this.cancelStroke(); if(this.pendingWorker) {this.cancelPendingEdit();return;} const r = this.history.undo(this.editState()); if (r) this.restoreEdit(r); }
+  redo() {this.pointers?.cancelEdit();if(this.renderer)this.cancelStroke(); this.cancelPendingEdit(); const r = this.history.redo(this.editState()); if (r) this.restoreEdit(r); }
 
   // Snapshot the current view as a PNG data URL (for saving to Photos).
   snapshot(): string {
@@ -405,8 +451,8 @@ export class KidsBall {
   panelCount(): number { return extractSphereFaces(this.graph.verts, this.graph.edges).length; }
 
   // ---- rendering ------------------------------------------------------------
-  private render() {
-    const previous = { group: this.group, panels: this.panelMeshes, details: this.animatedDetails, shaders: this.jellyShaders, exact: this.exactEdges };
+  private render(notify=true) {
+    const previous = { group: this.group, panels: this.panelMeshes, details: this.animatedDetails, shaders: this.jellyShaders, exact: this.exactEdges,life:this.lifeGroup,lifeContext:this.lifeContext,weather:this.weatherDetails };
     const caches = [this.faceGeometry, this.surfaceGeometry, this.toyModels];
     caches.forEach(cache=>cache.begin());
     this.group = new THREE.Group();
@@ -421,10 +467,12 @@ export class KidsBall {
       this.animatedDetails=previous.details;
       this.jellyShaders=previous.shaders;
       this.exactEdges=previous.exact;
+      this.lifeGroup=previous.life;this.lifeContext=previous.lifeContext;this.weatherDetails=previous.weather;
       caches.forEach(cache=>cache.rollback());
       if(this.renderedState) {
         this.graph=this.renderedState.graph;
         this.paintByFace=new Map(Object.entries(this.renderedState.paints));
+        this.relief=this.renderedState.relief??[];this.reliefSampler=createReliefSampler(this.relief);
       }
       throw error;
     }
@@ -432,13 +480,16 @@ export class KidsBall {
     this.scene.add(this.group);
     this.scene.remove(previous.group);
     disposeExcept(previous.group, this.group);
-    this.renderedState={graph:this.graph,paints:Object.fromEntries(this.paintByFace)};
-    this.onChange?.();
+    this.renderedState=this.editState();
+    this.evolutionDirty=false;
+    if(notify)this.onChange?.();
   }
 
   private buildWorld() {
     this.panelMeshes = [];
     this.animatedDetails = [];
+    this.weatherDetails=[];
+    this.reliefSampler=createReliefSampler(this.relief??[]);
     const g = this.graph;
     const edgeId = (a:number,b:number)=>a<b?`${a},${b}`:`${b},${a}`;
     this.exactEdges = new Set([...(g.authoredEdges ?? []),...(g.bridgeEdges ?? [])].map(([a,b])=>edgeId(a,b)));
@@ -477,6 +528,13 @@ export class KidsBall {
     faces.forEach((face, fi) => {
       const key = faceKeys[fi];
       let jellySignature="";
+      let reliefSignature="";
+      if(this.worldStyle==="tiny" && this.reliefSampler.key) {
+        const center=normalize(face.reduce<Vec3>((sum,i)=>[sum[0]+g.verts[i][0],sum[1]+g.verts[i][1],sum[2]+g.verts[i][2]],[0,0,0]));
+        let radius=0;
+        for(const i of face)radius=Math.max(radius,Math.acos(THREE.MathUtils.clamp(dot(center,vertsMm[i])/R,-1,1)));
+        reliefSignature=this.reliefSampler.signature(center,radius>=Math.PI/2?Math.PI:radius+.03);
+      }
       if(shapeJelly) {
         const center=normalize(face.reduce<Vec3>((sum,i)=>[sum[0]+g.verts[i][0],sum[1]+g.verts[i][1],sum[2]+g.verts[i][2]],[0,0,0]));
         let angularRadius=0;
@@ -487,12 +545,20 @@ export class KidsBall {
       }
       // Include coordinates and exact-edge flags: undo, imported worlds and
       // moving vertices may reuse indices while changing the actual surface.
-      const signature = `${this.worldStyle}:${face.map((a,i)=>`${a}:${g.verts[a].join(",")}:${this.exactEdges.has(edgeId(a,face[(i+1)%face.length]))?1:0}`).join(";")}:${jellySignature}`;
+      const signature = `${this.worldStyle}:${face.map((a,i)=>`${a}:${g.verts[a].join(",")}:${this.exactEdges.has(edgeId(a,face[(i+1)%face.length]))?1:0}`).join(";")}:${jellySignature}:${reliefSignature}`;
       const geom = this.faceGeometry.get(signature, ()=>{
         let positions = this.faceMesh(vertsMm, face);
         let normals:number[];
         if(shapeJelly) {
           const shaped=shapeJelly(positions);positions=shaped.positions;normals=shaped.normals;
+        } else if(reliefSignature) {
+          positions=refineReliefMesh(positions,this.relief,R);
+          normals=[];
+          for(let i=0;i<positions.length;i+=3) {
+            const point=[positions[i],positions[i+1],positions[i+2]],length=Math.hypot(...point);
+            const height=this.reliefSampler.height(point),normal=this.reliefSampler.normalAt(point,R);
+            for(let j=0;j<3;j++){positions[i+j]=point[j]/length*(R+height);normals.push(normal[j]);}
+          }
         } else normals=this.sphericalNormals(positions);
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions,3));
@@ -563,50 +629,109 @@ export class KidsBall {
       for(const [a,b] of g.authoredEdges ?? []) {
         const adjacent=edgeOwners.get(edgeId(a,b));
         if(adjacent?.faces.length===2 && facePaints[adjacent.faces[0]]===facePaints[adjacent.faces[1]]) continue;
-        ink.push(...onSphere(vertsMm[a],R*1.002),...onSphere(vertsMm[b],R*1.002));
+        const arc=this.surfaceArc(this.organicEdge(vertsMm[a],vertsMm[b],a,b));
+        for(let i=1;i<arc.length;i++)ink.push(...this.onSurface(arc[i-1],.24),...this.onSurface(arc[i],.24));
       }
       const inkGeometry = new THREE.BufferGeometry();
       inkGeometry.setAttribute("position",new THREE.Float32BufferAttribute(ink,3));
       this.group.add(new THREE.LineSegments(inkGeometry,new THREE.LineBasicMaterial({color:0xfff6dc,transparent:true,opacity:.9})));
-      const population=planPopulation(faces,g.verts,edgeOwners.values(),this.paintByFace);
-      population.placements.forEach(({point,terrain,slot,kind},fi) => {
-        if(kind==="resident") {
-          this.addTerrainDetail(ECOSYSTEMS[terrain][slot],[0],[point],slot,1);
-          return;
-        }
-        const center = new THREE.Vector3(...point);
-        const anchor = new THREE.Group();
-        anchor.position.copy(center).multiplyScalar(R + .35);
-        anchor.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),center);
-        const scenery = this.toyModels.get(`scenery:${terrain}:${slot%4}`,()=>sceneryModel(terrain,slot%4)).clone(true);
-        scenery.scale.setScalar(terrain === "water" ? 6 : 7);
-        scenery.rotation.y = fi * 2.399;
-        anchor.add(scenery);
-        this.addContactShadow(anchor, terrain === "water" ? 0 : 7);
-        this.group.add(anchor);
-      });
       const coast: number[] = [];
       for (const edge of edgeOwners.values()) {
         if (edge.faces.length !== 2) continue;
         const left = facePaints[edge.faces[0]];
         const right = facePaints[edge.faces[1]];
         if (left === right || (left !== "water" && right !== "water")) continue;
-        const points = this.organicEdge(vertsMm[edge.a],vertsMm[edge.b],edge.a,edge.b);
-        for (let i=1;i<points.length;i++) coast.push(...onSphere(points[i-1],R+.3),...onSphere(points[i],R+.3));
+        const points = this.surfaceArc(this.organicEdge(vertsMm[edge.a],vertsMm[edge.b],edge.a,edge.b));
+        for (let i=1;i<points.length;i++) coast.push(...this.onSurface(points[i-1],.3),...this.onSurface(points[i],.3));
       }
       const coastGeometry = new THREE.BufferGeometry();
       coastGeometry.setAttribute("position",new THREE.Float32BufferAttribute(coast,3));
       this.group.add(new THREE.LineSegments(coastGeometry,new THREE.LineBasicMaterial({color:0xdbf3d9,transparent:true,opacity:.75})));
-      for (const contact of findTerrainBorderContacts(faces, g.verts, edgeOwners.values(), this.paintByFace)) {
-        const left = facePaints[contact.leftFace];
-        const right = facePaints[contact.rightFace];
-        if (isTerrain(left) && isTerrain(right) && left !== right) {
-          const story = borderStoryFor(left, right);
-          const midpoint=new THREE.Vector3(...g.verts[contact.a]).add(new THREE.Vector3(...g.verts[contact.b])).normalize().toArray();
-          if (story && population.space.reserve(midpoint,.17)) this.addBorderStory(story, vertsMm[contact.a], vertsMm[contact.b]);
-        }
-      }
+      this.lifeContext={faces,edgeOwners,vertsMm};
+      this.lifeGroup=new THREE.Group();this.group.add(this.lifeGroup);
+      this.buildTinyLife(this.lifeContext);
     }
+  }
+
+  private onSurface(point:Vec3,lift=0):Vec3 {
+    return onSphere(point,R+(this.worldStyle==="tiny"?this.reliefSampler.height(point):0)+lift);
+  }
+  private surfaceArc(points:Vec3[]):Vec3[] {
+    if(!this.relief.length || points.length<2)return points;
+    const result:Vec3[]=[points[0]];
+    for(let i=1;i<points.length;i++) {
+      const a=new THREE.Vector3(...points[i-1]).normalize(),b=new THREE.Vector3(...points[i]).normalize();
+      const steps=Math.max(1,Math.ceil(a.angleTo(b)/.012));
+      for(let step=1;step<=steps;step++)result.push(a.clone().lerp(b,step/steps).normalize().toArray() as Vec3);
+    }
+    return result;
+  }
+  private terrainAt(point:readonly number[]):Biome|undefined {
+    const face=this.lifeContext?.faces.find(face=>regionContainsPoint(this.graph.verts,face,point));
+    const terrain=face?this.paintByFace.get(faceKey(face)):undefined;
+    return isTerrain(terrain)?terrain:undefined;
+  }
+  private habitatFits(point:number[],radius:number,terrain:Biome|undefined,maxHeightDifference=2.5) {
+    const n=new THREE.Vector3(...point),u=new THREE.Vector3(Math.abs(n.x)<.9?1:0,Math.abs(n.x)<.9?0:1,0).cross(n).normalize(),v=n.clone().cross(u);
+    const centerHeight=this.reliefSampler.height(point);
+    let supported=0;
+    for(let i=0;i<8;i++) {
+      const sample=n.clone().multiplyScalar(Math.cos(radius*.7)).addScaledVector(u,Math.sin(radius*.7)*Math.cos(i*Math.PI/4)).addScaledVector(v,Math.sin(radius*.7)*Math.sin(i*Math.PI/4));
+      if(terrain!=="water" && Math.abs(this.reliefSampler.height(sample.toArray())-centerHeight)>maxHeightDifference)return false;
+      if(!terrain || this.terrainAt(sample.toArray())===terrain)supported++;
+    }
+    return supported>=6;
+  }
+  private buildTinyLife(context:LifeContext) {
+    const state=this.living??createLivingState(),stage=livingStage(state);
+    const population=planPopulation(context.faces,this.graph.verts,context.edgeOwners.values(),this.paintByFace,{density:state.density,stage,elapsed:state.elapsed});
+    const space=new PopulationSpace(state.density==="sparse"?48:state.density==="rich"?96:72);
+    for(const stamp of selectReliefFeatures(this.relief??[])) {
+      if(this.terrainAt(stamp.center)!=="water")continue;
+      if(!space.reserve(stamp.center,stamp.radius*1.1))continue;
+      const feature=createReliefFeature(stamp);if(!feature)continue;
+      feature.position.fromArray(stamp.center).multiplyScalar(R);
+      feature.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),new THREE.Vector3(...stamp.center));
+      this.lifeGroup.add(feature);this.weatherDetails.push(feature);
+    }
+    population.placements.forEach(({id,point,terrain,slot,kind})=>{
+      const index=Number(id.slice(5));
+      const normal=this.reliefSampler.normalAt(point);
+      // Steep slopes are geology, not building plots. Water stays navigable.
+      if(terrain!=="water" && normal.reduce((sum,v,i)=>sum+v*point[i],0)<.86)return;
+      const detail=ecosystemForTerrain(terrain)[slot];
+      if(!detail)return;
+      const modelKey=kind==="resident"?`strategy:${terrain}:${detail.id}:${stage}:${index%4}`:`natural:${terrain}:${index%4}`;
+      const source=this.toyModels.get(modelKey,()=>kind==="resident"?strategyModel(detail,stage,index%4):naturalSceneryModel(terrain,index%4));
+      const scale=kind==="resident"?5.4:6.3;
+      const radius=Math.max(kind==="resident"?.10:.11,(Number(source.userData.footprintRadius)||1.7)*scale/R+.025);
+      const isStructure=["camp","village","farm","market","watchtower","windmill","watermill","quarry","forge","workshop","ruins"].includes(source.userData.family);
+      if(!this.habitatFits(point,radius,terrain,isStructure?1.25:2.5))return;
+      if(!space.reserve(point,radius))return;
+      const anchor=new THREE.Group();
+      anchor.userData.habitat={site:id,terrain,radius,kind,family:source.userData.family};
+      anchor.position.fromArray(this.onSurface([point[0],point[1],point[2]],.15));
+      anchor.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),new THREE.Vector3(...point));
+      const model=source.clone(true);model.scale.setScalar(scale);model.rotation.y=index*2.399;
+      anchor.add(model);this.lifeGroup.add(anchor);
+      if(terrain!=="water")this.addContactShadow(anchor,scale*1.2);
+      this.animatedDetails.push({object:model,base:model.position.clone(),baseScale:model.scale.clone(),baseRotation:model.rotation.clone(),phase:index*2.399,amount:kind==="resident"?.6:.15,motion:kind==="resident"?detail.motion:"sway"});
+    });
+    if(stage>0)for(const contact of findTerrainBorderContacts(context.faces,this.graph.verts,context.edgeOwners.values(),this.paintByFace)) {
+      const left=this.paintByFace.get(faceKey(context.faces[contact.leftFace])),right=this.paintByFace.get(faceKey(context.faces[contact.rightFace]));
+      if(!isTerrain(left)||!isTerrain(right)||left===right)continue;
+      const story=borderStoryFor(left,right),point=new THREE.Vector3(...this.graph.verts[contact.a]).add(new THREE.Vector3(...this.graph.verts[contact.b])).normalize().toArray();
+      if(story && this.habitatFits(point,.20,undefined,1.25) && space.reserve(point,.20))this.addBorderStory(story,context.vertsMm[contact.a],context.vertsMm[contact.b]);
+    }
+  }
+  private refreshTinyLife() {
+    if(!this.lifeContext||this.worldStyle!=="tiny")return;
+    const old=this.lifeGroup,details=this.animatedDetails,weather=this.weatherDetails;
+    this.toyModels.begin();this.lifeGroup=new THREE.Group();this.animatedDetails=[];this.weatherDetails=[];
+    try {this.buildTinyLife(this.lifeContext);} catch {
+      disposeExcept(this.lifeGroup,old);this.lifeGroup=old;this.animatedDetails=details;this.weatherDetails=weather;this.toyModels.rollback();this.evolutionDirty=false;return;
+    }
+    this.toyModels.commit();this.group.remove(old);this.group.add(this.lifeGroup);disposeExcept(old,this.group);this.evolutionDirty=false;
   }
 
   private panelMaterial(paint?: PaintKind): THREE.MeshStandardMaterial {
@@ -621,6 +746,15 @@ export class KidsBall {
             normal = normalize(normal + vec3(sin(vMapUv.y*170.0 + waterTime*.8)*.025,cos(vMapUv.x*130.0 + waterTime*.6)*.025,0.0));`);
         };
         material.customProgramCacheKey = () => "pocket-water-v1";
+      } else {
+        material.onBeforeCompile=shader=>{
+          shader.vertexShader=shader.vertexShader.replace("#include <common>","#include <common>\nvarying float terrainElevation; varying float terrainSlope;").replace("#include <begin_vertex>","#include <begin_vertex>\nterrainElevation=length(position)-120.0;terrainSlope=1.0-dot(normalize(normal),normalize(position));");
+          shader.fragmentShader=shader.fragmentShader.replace("#include <common>","#include <common>\nvarying float terrainElevation; varying float terrainSlope;").replace("#include <map_fragment>",`#include <map_fragment>
+            float exposedRock=smoothstep(.10,.36,terrainSlope)*smoothstep(.5,3.5,terrainElevation);
+            diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.19,.18,.15),exposedRock*.7);
+            diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.68,.70,.65),smoothstep(9.0,14.0,terrainElevation)*.8);`);
+        };
+        material.customProgramCacheKey=()=>"pocket-land-elevation-v1";
       }
       return material;
     }
@@ -737,7 +871,7 @@ export class KidsBall {
     ctx.fillRect(0, 0, 160, 160);
 
     if (terrain === "water") {
-      ctx.strokeStyle = highlight.getStyle(); ctx.globalAlpha = 0.42; ctx.lineWidth = 2;
+      ctx.strokeStyle = highlight.getStyle(); ctx.globalAlpha = 0.18; ctx.lineWidth = 1;
       for (let y = 14; y < 160; y += 19) {
         ctx.beginPath();
         for (let x = -8; x <= 168; x += 8) {
@@ -747,7 +881,7 @@ export class KidsBall {
         ctx.stroke();
       }
     } else if (terrain === "meadow") {
-      ctx.strokeStyle = accent.getStyle(); ctx.globalAlpha = 0.45; ctx.lineWidth = 1.25;
+      ctx.strokeStyle = accent.getStyle(); ctx.globalAlpha = 0.20; ctx.lineWidth = 1.25;
       for (let i = 0; i < 180; i++) {
         const x = random() * 160, y = random() * 160;
         ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + (random() - .5) * 3, y - 4 - random() * 5); ctx.stroke();
@@ -768,6 +902,28 @@ export class KidsBall {
         for (let step = 0; step < 5; step++) { x += (random() - .35) * 17; y += (random() - .5) * 16; ctx.lineTo(x, y); }
         ctx.stroke();
       }
+    } else if (terrain === "forest") {
+      ctx.fillStyle=accent.getStyle();ctx.globalAlpha=.20;
+      for(let i=0;i<200;i++) {
+        const x=random()*160,y=random()*160;
+        ctx.beginPath();ctx.ellipse(x,y,1+random()*2,.5+random(),random()*Math.PI,0,Math.PI*2);ctx.fill();
+      }
+      ctx.strokeStyle=highlight.getStyle();ctx.globalAlpha=.12;ctx.lineWidth=.8;
+      for(let i=0;i<60;i++){const x=random()*160,y=random()*160;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+4,y+3);ctx.stroke();}
+    } else if (terrain === "wetland") {
+      ctx.strokeStyle=accent.getStyle();ctx.globalAlpha=.22;ctx.lineWidth=2;
+      for(let y=9;y<160;y+=23) {
+        ctx.beginPath();for(let x=-5;x<=165;x+=5){const py=y+Math.sin(x*.075+y)*4;if(x===-5)ctx.moveTo(x,py);else ctx.lineTo(x,py);}ctx.stroke();
+      }
+      ctx.strokeStyle=highlight.getStyle();ctx.lineWidth=.8;ctx.globalAlpha=.25;
+      for(let i=0;i<70;i++){const x=random()*160,y=random()*160;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+1,y-4);ctx.stroke();}
+    } else if (terrain === "snow") {
+      ctx.strokeStyle=highlight.getStyle();ctx.globalAlpha=.22;ctx.lineWidth=1.2;
+      for(let y=11;y<160;y+=28) {
+        ctx.beginPath();for(let x=-5;x<=165;x+=5){const py=y+Math.sin(x*.045+y)*5;if(x===-5)ctx.moveTo(x,py);else ctx.lineTo(x,py);}ctx.stroke();
+      }
+      ctx.fillStyle=accent.getStyle();ctx.globalAlpha=.14;
+      for(let i=0;i<160;i++)ctx.fillRect(random()*160,random()*160,.8,.8);
     } else { // stone
       ctx.fillStyle = accent.getStyle(); ctx.globalAlpha = 0.38;
       for (let i = 0; i < 48; i++) {
@@ -790,380 +946,17 @@ export class KidsBall {
     return texture;
   }
 
-  private edgeAnchor(a: Vec3, b: Vec3) {
-    const p = new THREE.Vector3(a[0] + b[0], a[1] + b[1], a[2] + b[2]).normalize().multiplyScalar(R * 1.035);
-    const icon = new THREE.Group();
-    icon.position.copy(p);
-    icon.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), p.clone().normalize());
-    this.group.add(icon);
-    return icon;
-  }
-
-  private addTinyPerson(group: THREE.Group, x: number, z: number, outfit: number, skin = 0xffd1a4) {
-    const person = makePerson(outfit, skin);
-    person.position.set(x,0,z);
-    group.add(person);
-  }
-
-  // Every pair of terrains has a tiny border story. They are scaled as small
-  // figures seen from afar, so the planet reads as a world rather than a toy
-  // shelf full of oversized characters.
   private addBorderStory(story: BorderStory, a: Vec3, b: Vec3) {
-    const icon = this.edgeAnchor(a, b);
-    const scene = new THREE.Group();
-    const [c1, c2, c3] = story.colors;
-    const mesh = (geometry: THREE.BufferGeometry, color: number, x = 0, y = 0, z = 0) => {
-      const object = new THREE.Mesh(geometry, this.detailMaterial(color));
-      object.position.set(x, y, z);
-      scene.add(object);
-      return object;
-    };
-    const fish = (x: number, y: number) => {
-      const object = mesh(new THREE.SphereGeometry(0.3, 8, 6), c2, x, y, 0.2);
-      object.scale.set(1.65, 0.62, 0.55);
-    };
-
-    switch (story.id) {
-      case "fishing": {
-        this.addTinyPerson(scene, -1.05, 0, c1);
-        scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-0.78, 0.82, 0), new THREE.Vector3(1.32, 1.62, 0), new THREE.Vector3(1.58, 0.38, 0)]), new THREE.LineBasicMaterial({ color: c3 })));
-        fish(1.05, 0.25); fish(1.65, 0.5);
-        break;
-      }
-      case "beachDay": {
-        mesh(new THREE.BoxGeometry(1.55, 0.08, 0.92), c1, -0.45, 0.07, 0);
-        for (const x of [0.65, 1.05]) mesh(new THREE.CylinderGeometry(0.19, 0.22, 0.72, 6), c2, x, 0.36, 0);
-        mesh(new THREE.ConeGeometry(0.26, 0.3, 5), c2, 0.65, 0.87, 0);
-        this.addTinyPerson(scene, -0.68, 0.1, c3);
-        break;
-      }
-      case "firewatch": {
-        this.addTinyPerson(scene, -0.72, 0, c3);
-        mesh(new THREE.ConeGeometry(0.38, 0.9, 7), c2, 0.62, 0.45, 0);
-        mesh(new THREE.SphereGeometry(0.24, 8, 6), c1, 0.62, 0.85, 0);
-        break;
-      }
-      case "trailhead": {
-        this.addTinyPerson(scene, -0.74, 0, c1);
-        const goat = mesh(new THREE.SphereGeometry(0.36, 8, 6), c2, 0.58, 0.37, 0);
-        goat.scale.set(1.45, 0.72, 0.72);
-        mesh(new THREE.ConeGeometry(0.18, 0.42, 5), c3, 0.9, 0.78, 0);
-        break;
-      }
-      case "tidepool": {
-        mesh(new THREE.TorusGeometry(0.72, 0.09, 6, 14), c1, 0, 0.11, 0).rotation.x = Math.PI / 2;
-        const crab = mesh(new THREE.SphereGeometry(0.28, 8, 6), c2, 0.1, 0.36, 0);
-        crab.scale.set(1.45, 0.65, 0.8);
-        for (const x of [-0.26, 0.36]) mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.42, 5), c2, x, 0.22, 0);
-        break;
-      }
-      case "steam": {
-        for (const [x, y, size] of [[-0.42, 0.72, 0.34], [0.08, 1.2, 0.48], [0.56, 1.62, 0.3]] as [number, number, number][]) {
-          mesh(new THREE.SphereGeometry(size, 10, 8), c1, x, y, 0).scale.set(1.2, 0.8, 0.8);
-        }
-        mesh(new THREE.DodecahedronGeometry(0.34), c2, -0.18, 0.25, 0);
-        break;
-      }
-      case "waterfall": {
-        mesh(new THREE.CylinderGeometry(0.48, 0.6, 1.5, 7), c2, 0, 0.75, 0);
-        mesh(new THREE.BoxGeometry(0.52, 1.3, 0.12), c1, 0.15, 0.7, 0.47);
-        for (const x of [-0.45, 0.45]) mesh(new THREE.DodecahedronGeometry(0.32), c2, x, 0.2, 0);
-        break;
-      }
-      case "glassworks": {
-        this.addTinyPerson(scene, -0.72, 0, c1);
-        mesh(new THREE.DodecahedronGeometry(0.38), c3, 0.52, 0.44, 0);
-        mesh(new THREE.SphereGeometry(0.22, 8, 6), c2, 0.52, 0.93, 0);
-        break;
-      }
-      case "duneclimb": {
-        mesh(new THREE.BoxGeometry(1.22, 0.38, 0.7), c3, 0, 0.42, 0);
-        mesh(new THREE.BoxGeometry(0.62, 0.3, 0.56), c1, -0.12, 0.78, 0);
-        for (const x of [-0.42, 0.42]) mesh(new THREE.TorusGeometry(0.19, 0.045, 6, 8), c2, x, 0.2, 0.34).rotation.x = Math.PI / 2;
-        break;
-      }
-      default: { // forge
-        mesh(new THREE.CylinderGeometry(0.65, 0.76, 0.35, 7), c2, 0, 0.18, 0);
-        mesh(new THREE.SphereGeometry(0.36, 9, 7), c1, 0, 0.56, 0);
-        mesh(new THREE.ConeGeometry(0.27, 0.62, 5), c3, 0, 0.98, 0);
-        this.addTinyPerson(scene, -0.92, 0, c2);
-      }
-    }
-    scene.scale.setScalar(3.6);
-    icon.add(scene);
-    this.animatedDetails.push({ object: scene, base: scene.position.clone(), baseScale: scene.scale.clone(), baseRotation: scene.rotation.clone(), phase: a[0] * 0.41 + b[1] * 0.67, amount: 0.34, motion: story.motion });
-  }
-
-  private addTerrainDetail(detail: EcosystemDetail, face: number[], verts: number[][], slot: number, count: number) {
-    const normal = new THREE.Vector3();
-    for (const index of face) normal.add(new THREE.Vector3(verts[index][0], verts[index][1], verts[index][2]));
-    normal.normalize();
-    const anchor = new THREE.Group();
-    anchor.position.copy(normal).multiplyScalar(R + .6);
-    anchor.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
-    // Spread multiple discoveries across the joined habitat, rather than piling
-    // them at its centre. The deterministic phase keeps a saved world stable.
-    const phase = (slot + 1) * 2.399 + face[0] * 0.617;
-    const spread = Math.min(3, 1 + count * .15);
-    anchor.rotateY(phase);
-    this.group.add(anchor);
-
-    const model = this.toyModels.get(`detail:${detail.id}`,()=>heroModel(detail) ?? bakeToy(this.makeTerrainModel(detail))).clone(true);
-    // People are the emotional focus of Tiny World, so they intentionally
-    // break the old miniature scale. Other discoveries grow too, preserving
-    // a coherent toy-world silhouette instead of isolated giant characters.
-    const scale = detail.motif === "people" ? 5.8 : detail.motif === "animal" || detail.motif === "waterlife" ? 6.2 : 5.2;
-    model.scale.setScalar(scale);
-    const airborne = detail.motif === "flying" || detail.motif === "weather";
-    model.position.set(Math.cos(phase * 1.7) * spread, airborne ? 10 : .2, Math.sin(phase * 1.7) * spread * .6);
-    model.rotation.y = phase * 0.8;
-    anchor.add(model);
-    this.addContactShadow(anchor, scale * 1.4);
-    this.animatedDetails.push({ object: model, base: model.position.clone(), baseScale: model.scale.clone(), baseRotation: model.rotation.clone(), phase, amount: 1.2 + (slot % 3) * .2, motion: detail.motion === "roll" && detail.motif === "vehicle" ? "walk" : detail.motion });
-  }
-
-  private detailMaterial(color: number, emissive = 0) {
-    return new THREE.MeshStandardMaterial({ color, roughness: 0.58, emissive, emissiveIntensity: emissive ? 0.35 : 0 });
-  }
-
-  // These are deliberately multi-part toy models, not emoji billboards. Their
-  // silhouettes remain readable when they are only a few pixels tall on iPad.
-  private makeTerrainModel(detail: EcosystemDetail): THREE.Group {
-    const group = new THREE.Group();
-    const [c1, c2 = c1, c3 = c2] = detail.colors;
-    const add = (geometry: THREE.BufferGeometry, color: number, x = 0, y = 0, z = 0, scale?: [number, number, number]) => {
-      const mesh = new THREE.Mesh(geometry, this.detailMaterial(color));
-      mesh.position.set(x, y, z);
-      if (scale) mesh.scale.set(...scale);
-      group.add(mesh);
-      return mesh;
-    };
-    const sphere = (color: number, x = 0, y = 0, z = 0, scale: [number, number, number] = [1, 1, 1]) => add(new THREE.SphereGeometry(0.72, 10, 8), color, x, y, z, scale);
-    const cone = (color: number, x = 0, y = 0, z = 0, scale: [number, number, number] = [1, 1, 1]) => add(new THREE.ConeGeometry(0.62, 1.5, 7), color, x, y, z, scale);
-
-    if (detail.id === "tumbleweed") {
-      for (const angle of [0, Math.PI / 3, (2 * Math.PI) / 3]) {
-        const ring = add(new THREE.TorusGeometry(0.72, 0.08, 6, 12), c1, 0, 0.78, 0);
-        ring.rotation.set(angle, angle * 0.7, 0.35);
-      }
-      sphere(c2, 0.15, 0.85, 0, [0.22, 0.22, 0.22]);
-      return group;
-    }
-    if (detail.id === "kite" || detail.id === "firekite") {
-      const diamond = add(new THREE.ConeGeometry(0.78, 1.35, 4), c1, 0, 1.15, 0, [1, 1, 0.12]);
-      diamond.rotation.z = Math.PI / 4;
-      const tail = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-0.45, 0.65, 0), new THREE.Vector3(-1.0, 0.1, 0), new THREE.Vector3(-0.55, -0.25, 0)]), new THREE.LineBasicMaterial({ color: c2 }));
-      group.add(tail);
-      sphere(c3, -1, 0.08, 0, [0.16, 0.16, 0.16]);
-      return group;
-    }
-    if (detail.id === "bike") {
-      for (const x of [-0.58, 0.58]) {
-        const wheel = add(new THREE.TorusGeometry(0.4, 0.07, 6, 10), 0x263238, x, 0.42, 0, [1, 1, 0.3]);
-        wheel.rotation.x = Math.PI / 2;
-      }
-      const frame = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-0.58, 0.42, 0), new THREE.Vector3(0, 1.0, 0), new THREE.Vector3(0.58, 0.42, 0), new THREE.Vector3(-0.58, 0.42, 0)]), new THREE.LineBasicMaterial({ color: c1 }));
-      group.add(frame);
-      sphere(c2, 0, 1.62, 0, [0.35, 0.35, 0.35]);
-      return group;
-    }
-    if (detail.id === "castle") {
-      for (const [x, h] of [[-0.52, 1.25], [0, 1.75], [0.52, 1.2]] as [number, number][]) {
-        add(new THREE.CylinderGeometry(0.28, 0.32, h, 6), c1, x, h / 2, 0);
-        cone(c2, x, h + 0.36, 0, [0.48, 0.5, 0.48]);
-      }
-      add(new THREE.BoxGeometry(1.45, 0.72, 0.55), c1, 0, 0.37, 0);
-      return group;
-    }
-    if (detail.id === "whale") {
-      sphere(c1, 0, 0.85, 0, [1.7, 0.72, 0.72]);
-      const tail = cone(c2, -1.2, 0.92, 0, [0.75, 0.48, 0.2]);
-      tail.rotation.z = -Math.PI / 2;
-      const fin = cone(c2, 0.2, 1.3, -0.28, [0.35, 0.45, 0.15]);
-      fin.rotation.z = 0.5;
-      sphere(0x1f2937, 0.95, 1.05, 0.38, [0.1, 0.1, 0.1]);
-      return group;
-    }
-    if (detail.id === "rocketbuoy" || detail.id === "launchpad" || detail.id === "flareRocket") {
-      add(new THREE.CylinderGeometry(0.26, 0.34, 1.65, 8), c1, 0, 1.05, 0);
-      cone(c2, 0, 2.02, 0, [0.44, 0.5, 0.44]);
-      for (const x of [-0.28, 0.28]) {
-        const fin = cone(c2, x, 0.6, 0, [0.26, 0.45, 0.2]);
-        fin.rotation.z = x < 0 ? 0.5 : -0.5;
-      }
-      cone(0xffc857, 0, 0.05, 0, [0.28, 0.65, 0.28]).rotation.z = Math.PI;
-      return group;
-    }
-    if (detail.id === "cablecar") {
-      const cable = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-1.15, 2.0, 0), new THREE.Vector3(1.15, 2.0, 0)]), new THREE.LineBasicMaterial({ color: 0x33415c }));
-      group.add(cable);
-      add(new THREE.BoxGeometry(0.9, 0.62, 0.65), c1, 0.18, 1.25, 0);
-      add(new THREE.CylinderGeometry(0.04, 0.04, 0.75, 5), c2, 0.18, 1.68, 0);
-      return group;
-    }
-
-    // The early discoveries get their own small cast. These layered clusters
-    // make a grown habitat feel busier before its larger landmarks unlock.
-    if (detail.id === "walkers" || detail.id === "climbers") {
-      this.addTinyPerson(group, -0.52, 0.12, c1);
-      this.addTinyPerson(group, 0.16, -0.08, c2, c3);
-      this.addTinyPerson(group, 0.72, 0.16, c3, c2);
-      return group;
-    }
-    if (detail.id === "dogs") {
-      this.addTinyPerson(group, -0.5, 0, c2, 0xffd1a4);
-      sphere(c1, 0.47, 0.3, 0, [0.72, 0.4, 0.42]);
-      sphere(c1, 0.95, 0.48, 0, [0.27, 0.24, 0.24]);
-      return group;
-    }
-    if (detail.id === "butterflies") {
-      for (const [x, y, color] of [[-0.58, 0.82, c1], [0.05, 1.25, c2], [0.63, 0.66, c3]] as [number, number, number][]) {
-        const wings = add(new THREE.SphereGeometry(0.34, 7, 6), color, x, y, 0, [1.35, 0.58, 0.2]);
-        wings.rotation.z = x * 0.45;
-        add(new THREE.CylinderGeometry(0.03, 0.03, 0.34, 5), 0x28334a, x, y - 0.04, 0);
-      }
-      return group;
-    }
-    if (detail.id === "sheep") {
-      for (const [x, size] of [[-0.55, 0.55], [0.08, 0.68], [0.68, 0.48]] as [number, number][]) {
-        sphere(c1, x, size * 0.8, 0, [size, size * 0.62, size * 0.56]);
-        sphere(c2, x + size * 0.55, size * 0.88, 0.22, [size * 0.28, size * 0.26, size * 0.25]);
-      }
-      return group;
-    }
-    if (detail.id === "flowers") {
-      for (const [x, height, color] of [[-0.48, 1.2, c1], [0, 1.55, c2], [0.48, 1.05, c3]] as [number, number, number][]) {
-        add(new THREE.CylinderGeometry(0.035, 0.05, height, 5), 0x4b8b57, x, height / 2, 0);
-        for (let petal = 0; petal < 5; petal++) {
-          const angle = (Math.PI * 2 * petal) / 5;
-          sphere(color, x + Math.cos(angle) * 0.16, height + Math.sin(angle) * 0.16, 0, [0.16, 0.16, 0.1]);
-        }
-      }
-      return group;
-    }
-    if (detail.id === "shoal") {
-      for (const [x, y, size] of [[-0.62, 0.68, 0.44], [-0.18, 1.02, 0.34], [0.32, 0.58, 0.42], [0.72, 1.12, 0.27]] as [number, number, number][]) {
-        sphere(c1, x, y, 0, [size * 1.55, size * 0.62, size * 0.55]);
-        const tail = cone(c2, x - size * 0.62, y, 0, [size * 0.48, size * 0.48, size * 0.18]);
-        tail.rotation.z = -Math.PI / 2;
-      }
-      return group;
-    }
-    if (detail.id === "ducks") {
-      for (const [x, scale] of [[-0.38, 0.72], [0.36, 0.42], [0.72, 0.3]] as [number, number][]) {
-        sphere(c1, x, 0.52, 0, [scale, scale * 0.45, scale * 0.48]);
-        sphere(c2, x + scale * 0.45, 0.7, 0, [scale * 0.3, scale * 0.26, scale * 0.28]);
-      }
-      return group;
-    }
-    if (detail.id === "turtle") {
-      sphere(c1, 0, 0.72, 0, [1.15, 0.46, 0.78]);
-      for (const [x, z] of [[-0.58, -0.48], [-0.58, 0.48], [0.55, -0.48], [0.55, 0.48]] as [number, number][]) sphere(c2, x, 0.58, z, [0.28, 0.12, 0.28]);
-      sphere(c2, 0.9, 0.76, 0, [0.27, 0.2, 0.22]);
-      return group;
-    }
-    if (detail.id === "seaplane") {
-      sphere(c1, 0, 0.78, 0, [1.25, 0.32, 0.3]);
-      add(new THREE.BoxGeometry(1.65, 0.06, 0.5), c2, 0, 0.8, 0);
-      add(new THREE.BoxGeometry(0.45, 0.08, 0.85), c2, -0.64, 0.91, 0);
-      for (const z of [-0.34, 0.34]) add(new THREE.CylinderGeometry(0.05, 0.05, 0.85, 5), c3, -0.18, 0.32, z).rotation.z = Math.PI / 2;
-      return group;
-    }
-    if (detail.id === "crabs") {
-      for (const [x, size] of [[-0.5, 0.46], [0.12, 0.62], [0.68, 0.36]] as [number, number][]) {
-        sphere(c1, x, size * 0.64, 0, [size, size * 0.42, size * 0.55]);
-        for (const dx of [-1, 1]) add(new THREE.CylinderGeometry(0.025, 0.025, size * 0.54, 5), c2, x + dx * size * 0.45, size * 0.34, 0).rotation.z = dx * 0.8;
-      }
-      return group;
-    }
-    if (detail.id === "salamander") {
-      sphere(c1, 0, 0.48, 0, [1.35, 0.38, 0.42]);
-      sphere(c2, 0.92, 0.6, 0, [0.35, 0.28, 0.28]);
-      const tail = cone(c2, -1.0, 0.47, 0, [0.48, 0.28, 0.16]);
-      tail.rotation.z = -Math.PI / 2;
-      for (const x of [-0.38, 0.35]) sphere(c2, x, 0.22, 0.36, [0.18, 0.08, 0.16]);
-      return group;
-    }
-    if (detail.id === "train") {
-      add(new THREE.BoxGeometry(1.32, 0.55, 0.7), c1, 0, 0.6, 0);
-      add(new THREE.BoxGeometry(0.52, 0.58, 0.64), c2, -0.32, 1.13, 0);
-      for (const x of [-0.42, 0.42]) sphere(0x303846, x, 0.24, 0.38, [0.2, 0.2, 0.2]);
-      sphere(c3, 0.68, 0.67, 0, [0.12, 0.12, 0.12]);
-      return group;
-    }
-    if (detail.id === "meteor") {
-      sphere(c1, 0.45, 1.05, 0, [0.43, 0.43, 0.43]);
-      for (let i = 0; i < 4; i++) {
-        const trail = cone(i % 2 ? c2 : c1, -0.1 - i * 0.36, 0.9 - i * 0.18, 0, [0.19, 0.48, 0.16]);
-        trail.rotation.z = -Math.PI / 2;
-      }
-      return group;
-    }
-
-    if (detail.motif === "people") {
-      for (const x of [-0.55, 0.55]) {
-        cone(c1, x, 0.82, 0, [0.58, 0.85, 0.5]);
-        sphere(c2, x, 1.7, 0, [0.44, 0.44, 0.44]);
-        add(new THREE.CylinderGeometry(0.08, 0.08, 0.95, 5), c3, x + 0.42, 1.05, 0);
-      }
-    } else if (detail.motif === "animal") {
-      sphere(c1, 0, 0.72, 0, [1.35, 0.7, 0.68]);
-      sphere(c2, 0.88, 0.96, 0, [0.58, 0.56, 0.55]);
-      for (const x of [-0.55, 0.45]) add(new THREE.CylinderGeometry(0.08, 0.1, 0.62, 5), c3, x, 0.2, 0.3);
-      sphere(0x1f2937, 1.13, 1.08, 0.33, [0.11, 0.11, 0.11]);
-    } else if (detail.motif === "plant") {
-      add(new THREE.CylinderGeometry(0.11, 0.16, 1.65, 6), c2, 0, 0.82, 0);
-      for (let i = 0; i < 4; i++) {
-        const leaf = cone(c1, 0, 1.6, 0, [0.5, 0.7, 0.28]);
-        leaf.rotation.z = (Math.PI * 2 * i) / 4 + 0.55;
-        leaf.position.x = Math.cos((Math.PI * 2 * i) / 4) * 0.42;
-        leaf.position.z = Math.sin((Math.PI * 2 * i) / 4) * 0.42;
-      }
-      sphere(c3, 0, 1.95, 0, [0.42, 0.42, 0.42]);
-    } else if (detail.motif === "vehicle") {
-      if (detail.id === "sailboat") {
-        add(new THREE.BoxGeometry(1.85, 0.38, 0.7), c1, 0, 0.45, 0);
-        add(new THREE.CylinderGeometry(0.06, 0.06, 2.1, 6), c2, 0, 1.5, 0);
-        const sail = add(new THREE.ConeGeometry(0.75, 1.4, 3), c2, 0.38, 1.65, 0, [1, 1, 0.12]);
-        sail.rotation.z = -Math.PI / 2;
-      } else if (detail.id === "submarine") {
-        sphere(c1, 0, 0.65, 0, [1.45, 0.58, 0.58]);
-        add(new THREE.CylinderGeometry(0.07, 0.07, 0.75, 6), c2, 0, 1.28, 0);
-        sphere(c2, 0, 1.65, 0, [0.23, 0.23, 0.23]);
-      } else {
-        add(new THREE.BoxGeometry(1.65, 0.52, 0.88), c1, 0, 0.55, 0);
-        add(new THREE.BoxGeometry(0.78, 0.42, 0.78), c2, -0.18, 1.0, 0);
-        for (const x of [-0.55, 0.55]) sphere(0x293241, x, 0.28, 0.45, [0.28, 0.28, 0.28]);
-      }
-    } else if (detail.motif === "flying") {
-      const wing = add(new THREE.ConeGeometry(0.82, 1.75, 3), c1, 0, 0.95, 0, [1.2, 0.4, 0.9]);
-      wing.rotation.z = Math.PI / 2;
-      sphere(c2, 0.58, 1.0, 0, [0.42, 0.42, 0.42]);
-      add(new THREE.CylinderGeometry(0.08, 0.08, 1.1, 5), c3, -0.85, 0.9, 0).rotation.z = Math.PI / 2;
-    } else if (detail.motif === "waterlife") {
-      sphere(c1, 0, 0.8, 0, [1.4, 0.6, 0.55]);
-      const tail = cone(c2, -0.95, 0.8, 0, [0.55, 0.55, 0.25]);
-      tail.rotation.z = -Math.PI / 2;
-      sphere(0x1f2937, 0.72, 0.96, 0.33, [0.1, 0.1, 0.1]);
-      if (detail.id === "jellyfish") for (const x of [-0.35, 0, 0.35]) add(new THREE.CylinderGeometry(0.04, 0.04, 0.75, 5), c2, x, 0.18, 0);
-    } else if (detail.motif === "rocklife") {
-      add(new THREE.DodecahedronGeometry(0.8, 0), c1, 0, 0.7, 0, [1.25, 0.85, 0.85]);
-      sphere(c2, 0.48, 0.92, 0.43, [0.15, 0.15, 0.15]);
-      sphere(c2, 0.72, 0.92, 0.35, [0.15, 0.15, 0.15]);
-    } else if (detail.motif === "weather") {
-      for (const [x, y, scale] of [[-0.45, 0.7, 0.55], [0, 1.05, 0.75], [0.5, 0.72, 0.52]] as [number, number, number][]) sphere(c1, x, y, 0, [scale, scale, scale]);
-      for (let i = 0; i < 3; i++) add(new THREE.CylinderGeometry(0.04, 0.04, 0.65, 5), c2, -0.28 + i * 0.28, 0.08, 0);
-    } else if (detail.motif === "landmark") {
-      for (let i = 0; i < 3; i++) {
-        const crystal = cone(i === 1 ? c2 : c1, (i - 1) * 0.48, 0.75 + (i === 1 ? 0.28 : 0), 0, [0.55, 1.25, 0.55]);
-        crystal.rotation.z = (i - 1) * 0.18;
-      }
-      add(new THREE.CylinderGeometry(0.82, 0.98, 0.25, 7), c3, 0, 0.12, 0);
-    } else { // spark
-      for (let i = 0; i < 5; i++) sphere(i % 2 ? c2 : c1, Math.cos(i * 1.26) * 0.68, 0.72 + Math.sin(i * 1.26) * 0.35, Math.sin(i * 1.26) * 0.2, [0.21, 0.21, 0.21]);
-      sphere(c3, 0, 0.9, 0, [0.32, 0.32, 0.32]);
-    }
-    return group;
+    const point=new THREE.Vector3(...a).add(new THREE.Vector3(...b)).normalize();
+    const modelKey=story.terrains.includes("water")&&story.terrains.includes("stone")?"watermill":story.terrains.includes("water")||story.terrains.includes("wetland")?"fishing":story.terrains.includes("lava")?"forge":story.terrains.includes("sand")?"caravan":"camp";
+    const motion=modelKey==="caravan"?"walk":modelKey==="watermill"?"turn":"work";
+    const detail:EcosystemDetail={id:story.id,label:story.label,motif:"people",motion,colors:[...story.colors],model:modelKey};
+    const stage=livingStage(this.living),source=this.toyModels.get(`border:${story.id}:${stage}`,()=>strategyModel(detail,stage,0));
+    const model=source.clone(true);model.scale.setScalar(4.6);
+    const anchor=new THREE.Group();anchor.position.fromArray(this.onSurface([point.x,point.y,point.z],.2));
+    anchor.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),point);anchor.add(model);
+    this.addContactShadow(anchor,6);this.lifeGroup.add(anchor);
+    this.animatedDetails.push({object:model,base:model.position.clone(),baseScale:model.scale.clone(),baseRotation:model.rotation.clone(),phase:a[0]*.41+b[1]*.67,amount:.35,motion});
   }
 
   // Fan/ear-clip a face and project each triangle onto the sphere so panels
@@ -1245,6 +1038,10 @@ export class KidsBall {
   }
 
   private raySphere(): Vec3 | null {
+    if(this.worldStyle==="tiny" && this.relief.length) {
+      const hit=this.raycaster.intersectObjects(this.panelMeshes,false)[0];
+      if(hit)return onSphere([hit.point.x,hit.point.y,hit.point.z],R);
+    }
     const o = this.raycaster.ray.origin, d = this.raycaster.ray.direction;
     const b = 2 * (o.x * d.x + o.y * d.y + o.z * d.z);
     const c = o.x * o.x + o.y * o.y + o.z * o.z - R * R;
@@ -1257,6 +1054,7 @@ export class KidsBall {
 
   private onDown(e: PointerEvent) {
     if (this.tool === "move") return; // let OrbitControls handle it
+    if(this.tool==="relief" && this.worldStyle!=="tiny")return;
     if (this.pendingWorker) return;
     this.setNdc(e);
     this.raycaster.setFromCamera(this.ndc, this.camera);
@@ -1272,7 +1070,8 @@ export class KidsBall {
         const keys = paintRegion(this.graph,this.paintByFace,hit.object.userData.faceKey);
         keys.forEach(key=>this.paintByFace.set(key,this.selectedPaint));
         if (this.worldStyle === "jelly") this.triggerJellyImpact(hit.point, 0.85);
-        this.render();
+        this.render(this.worldStyle!=="tiny");
+        if(this.worldStyle==="tiny")this.completeWorldEdit();
       }
       return;
     }
@@ -1292,7 +1091,7 @@ export class KidsBall {
     const height = this.renderer.domElement.getBoundingClientRect().height;
     const distance = this.camera.position.distanceTo(new THREE.Vector3(...p));
     this.strokeStep = THREE.MathUtils.clamp(distance * 2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2)) / height / R * 1.5,.0005,.008);
-    this.brushRadius=THREE.MathUtils.clamp(this.strokeStep/1.5*this.brushWidth/2,.003,.12);
+    this.brushRadius=THREE.MathUtils.clamp(this.strokeStep/1.5*(this.tool==="relief"?this.reliefSize:this.brushWidth)/2,this.tool==="relief"?RELIEF_LIMITS.minRadius:.003,this.tool==="relief"?RELIEF_LIMITS.maxRadius:.12);
     this.controls.enabled = false;
     this.updatePreview();
   }
@@ -1343,7 +1142,8 @@ export class KidsBall {
       if(end)pts[pts.length-1]=end;
     }
     this.strokePts = [];
-    if (cancelled || pts.length < (this.tool==="brush"?1:2)) {this.removePreview();return;}
+    if (cancelled || pts.length < (this.tool==="brush"||this.tool==="relief"?1:2)) {this.removePreview();return;}
+    if(this.tool==="relief") {this.commitRelief(pts);this.removePreview();return;}
     const request:EditRequest={graph:this.graph,paints:Object.fromEntries(this.paintByFace),points:pts,close,step:this.strokeStep,paint:this.selectedPaint,brushRadius:this.tool==="brush"?this.brushRadius:undefined};
     try {
       const worker=new Worker(new URL("../world/editWorker.ts",import.meta.url),{type:"module"});
@@ -1358,7 +1158,7 @@ export class KidsBall {
         const edited=event.data.edit;
         this.graph=edited.graph;this.paintByFace=new Map(Object.entries(edited.paints) as [string,PaintKind][]);
         this.cancelPendingEdit();
-        try {this.render();} catch {this.container.dispatchEvent(new CustomEvent("world-processing",{detail:"No se pudo dibujar el cambio. Tu mundo anterior se conservó."}));}
+        try {this.render(this.worldStyle!=="tiny");if(this.worldStyle==="tiny")this.completeWorldEdit();} catch {this.container.dispatchEvent(new CustomEvent("world-processing",{detail:"No se pudo dibujar el cambio. Tu mundo anterior se conservó."}));}
         if(this.worldStyle==="jelly")this.triggerJellyImpact(new THREE.Vector3().fromArray(pts[pts.length-1]),1.15);
       };
       worker.postMessage(request);
@@ -1370,20 +1170,48 @@ export class KidsBall {
     this.container.dispatchEvent(new CustomEvent("world-processing",{detail:""}));
   }
 
+  private commitRelief(points:number[][]) {
+    let next=this.relief,run:number[][]=[],terrain:Biome|undefined,last:number[]|undefined;
+    const flush=()=>{if(terrain&&run.length)next=applyReliefStroke(next,run,this.reliefMode,terrain,this.brushRadius,this.reliefStrength);run=[];};
+    for(const point of points) {
+      if(last && Math.acos(THREE.MathUtils.clamp(point.reduce((sum,v,i)=>sum+v*last![i],0),-1,1))<this.brushRadius*.2)continue;
+      last=point;const here=this.terrainAt(point);
+      if(here!==terrain){flush();terrain=here;}
+      if(here)run.push(point);
+    }
+    flush();
+    if(JSON.stringify(next)===JSON.stringify(this.relief)) {
+      this.container.dispatchEvent(new CustomEvent("world-processing",{detail:this.relief.length>=96?"Límite de relieve: usá Suavizar para liberar espacio.":"Primero pintá un ecosistema en esta superficie."}));
+      return;
+    }
+    this.history.push(this.editState());this.relief=next;this.reliefSampler=createReliefSampler(next);
+    try {this.render(false);this.completeWorldEdit();this.container.dispatchEvent(new CustomEvent("world-processing",{detail:""}));}
+    catch {this.container.dispatchEvent(new CustomEvent("world-processing",{detail:"No se pudo aplicar el relieve. Se conservó el mundo anterior."}));}
+  }
+
   private updatePreview() {
+    if(this.tool==="relief") {
+      const raw=this.strokePts.at(-1);if(!raw)return;
+      const n=new THREE.Vector3(...raw).normalize(),u=new THREE.Vector3(Math.abs(n.x)<.9?1:0,Math.abs(n.x)<.9?0:1,0).cross(n).normalize(),v=n.clone().cross(u);
+      const points=Array.from({length:49},(_,i)=>{const a=i*Math.PI/24,p=n.clone().multiplyScalar(Math.cos(this.brushRadius)).addScaledVector(u,Math.sin(this.brushRadius)*Math.cos(a)).addScaledVector(v,Math.sin(this.brushRadius)*Math.sin(a));return new THREE.Vector3(...this.onSurface([p.x,p.y,p.z],.5));});
+      this.previewMaterial.color.setHex(this.reliefMode==="lower"?0x93d0d4:0xe5cf93);
+      if(!this.preview){this.preview=new THREE.Line(new THREE.BufferGeometry(),this.previewMaterial);this.preview.renderOrder=999;this.scene.add(this.preview);}
+      this.preview.geometry.dispose();this.preview.geometry=new THREE.BufferGeometry().setFromPoints(points);
+      return;
+    }
     if(this.tool==="brush") {
       const pos:number[]=[], radius=this.brushRadius;
       const rings=this.strokePts.map(raw=>{
         const n=new THREE.Vector3(...raw).normalize();
         const side=new THREE.Vector3(Math.abs(n.x)<.9?1:0,Math.abs(n.x)<.9?0:1,0).cross(n).normalize();
         const up=n.clone().cross(side);
-        const ring=Array.from({length:16},(_,i)=>n.clone().multiplyScalar(Math.cos(radius)).addScaledVector(side,Math.sin(radius)*Math.cos(i*Math.PI/8)).addScaledVector(up,Math.sin(radius)*Math.sin(i*Math.PI/8)).multiplyScalar(R+.7));
-        for(let i=0;i<16;i++)pos.push(...n.clone().multiplyScalar(R+.7).toArray(),...ring[i].toArray(),...ring[(i+1)%16].toArray());
+        const ring=Array.from({length:16},(_,i)=>{const p=n.clone().multiplyScalar(Math.cos(radius)).addScaledVector(side,Math.sin(radius)*Math.cos(i*Math.PI/8)).addScaledVector(up,Math.sin(radius)*Math.sin(i*Math.PI/8));return this.onSurface(p.toArray(),.7);});
+        for(let i=0;i<16;i++)pos.push(...this.onSurface(n.toArray(),.7),...ring[i],...ring[(i+1)%16]);
         return n;
       });
       for(let i=1;i<rings.length;i++) {
         const a=rings[i-1],b=rings[i],side=a.clone().cross(b).normalize();
-        const corner=(p:THREE.Vector3,s:number)=>p.clone().multiplyScalar(Math.cos(radius)).addScaledVector(side,s*Math.sin(radius)).multiplyScalar(R+.7).toArray();
+        const corner=(p:THREE.Vector3,s:number)=>this.onSurface(p.clone().multiplyScalar(Math.cos(radius)).addScaledVector(side,s*Math.sin(radius)).toArray(),.7);
         const al=corner(a,1),ar=corner(a,-1),bl=corner(b,1),br=corner(b,-1);
         pos.push(...al,...ar,...bl,...ar,...br,...bl);
       }
@@ -1395,7 +1223,8 @@ export class KidsBall {
     }
     if (this.strokePts.length < 2) return;
     const pos: number[] = [];
-    for (const q of this.strokePts) { const p = onSphere(q, R * 1.002); pos.push(p[0], p[1], p[2]); }
+    this.previewMaterial.color.setHex(0x1c2430);
+    for (const q of this.strokePts) { const p = this.onSurface(q,.24); pos.push(p[0], p[1], p[2]); }
     if (!this.preview) {
       this.preview = new THREE.Line(new THREE.BufferGeometry(), this.previewMaterial);
       this.preview.renderOrder = 999;
@@ -1407,7 +1236,7 @@ export class KidsBall {
     this.updateSnapGuide();
   }
   private projectSnapPoint(point:number[]) {
-    const world=new THREE.Vector3(...point).normalize().multiplyScalar(R);
+    const world=new THREE.Vector3(...this.onSurface([point[0],point[1],point[2]]));
     if(world.dot(this.camera.position.clone().sub(world))<=0)return;
     const projected=world.project(this.camera),rect=this.renderer.domElement.getBoundingClientRect();
     return {x:(projected.x+1)*rect.width/2,y:(1-projected.y)*rect.height/2};
@@ -1423,11 +1252,11 @@ export class KidsBall {
     const target=shouldCloseBorder(points,q=>this.projectSnapPoint(q))?points[0]:nearbyBorder(last,this.graph,this.snapEdges,q=>this.projectSnapPoint(q));
     if(!target)return;
     const group=new THREE.Group(),a=new THREE.Vector3(...last),b=new THREE.Vector3(...target);
-    const bridge=Array.from({length:13},(_,i)=>a.clone().lerp(b,i/12).normalize().multiplyScalar(R*1.004));
+    const bridge=Array.from({length:13},(_,i)=>new THREE.Vector3(...this.onSurface(a.clone().lerp(b,i/12).normalize().toArray(),.5)));
     const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints(bridge),new THREE.LineDashedMaterial({color:0xffdd65,dashSize:1,gapSize:.7,depthTest:false}));
     line.computeLineDistances();line.renderOrder=1000;group.add(line);
     const marker=new THREE.Mesh(new THREE.RingGeometry(1.2,1.8,24),new THREE.MeshBasicMaterial({color:0xffdd65,side:THREE.DoubleSide,depthTest:false}));
-    marker.position.copy(b).multiplyScalar(R*1.005);marker.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),b);marker.renderOrder=1001;group.add(marker);
+    marker.position.fromArray(this.onSurface(b.toArray(),.6));marker.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),b);marker.renderOrder=1001;group.add(marker);
     this.snapGuide=group;this.scene.add(group);
   }
   private removePreview() { this.clearSnapGuide();if (this.preview) { this.scene.remove(this.preview); this.preview.geometry.dispose(); this.preview = undefined; } }
@@ -1451,9 +1280,16 @@ export class KidsBall {
   private animate = () => {
     requestAnimationFrame(this.animate);
     const t = performance.now() / 1000;
-    this.waterTime.value = t;
     const dt = Math.min(0.05, Math.max(0.001, t - this.lastAnimationTime / 1000));
     this.lastAnimationTime = t * 1000;
+    if(this.worldStyle==="tiny" && !document.hidden && this.graph.edges.length && !this.pendingWorker) {
+      const change=advanceLivingWorld(this.living,dt);
+      if(change.stageChanged||change.unlocked.length)this.evolutionDirty=true;
+      this.progressTick+=dt;
+      if(this.progressTick>=1){this.progressTick=0;this.notifyLiving();}
+      if(this.evolutionDirty&&!this.drawing)this.refreshTinyLife();
+    }
+    this.waterTime.value = this.worldStyle==="tiny"?this.living.elapsed:t;
     const remaining = this.wobbleUntil - performance.now();
     if (this.worldStyle === "jelly") {
       // A damped spring supplies the large soft-body response; the shader
@@ -1476,7 +1312,9 @@ export class KidsBall {
       this.group.scale.setScalar(1);
     }
     this.stars.rotation.y = t * 0.008;
-    for (const detail of this.animatedDetails) this.behaviourEngine.update(detail, { time: t });
+    const context={time:this.worldStyle==="tiny"?this.living.elapsed:t,stage:livingStage(this.living)};
+    if(!this.reducedMotion)for (const detail of this.animatedDetails) this.behaviourEngine.update(detail,context);
+    for(const weather of this.weatherDetails)animateReliefFeature(weather,this.living.elapsed,this.reducedMotion);
     if(!this.drawing) this.controls.update();
     this.renderer.render(this.scene, this.camera);
   };

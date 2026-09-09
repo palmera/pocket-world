@@ -87,20 +87,20 @@ test("a long shared coastline creates one border story, not one per panel edge",
   assert.deepEqual([contacts[0].leftFace, contacts[0].rightFace], [0, 1]);
 });
 
-test("the five terrain catalogues contain ten interior stories each", () => {
-  assert.deepEqual(Object.values(ECOSYSTEMS).map((stories) => stories.length), [10, 10, 10, 10, 10]);
+test("the eight terrain catalogues contain ten interior stories each", () => {
+  assert.deepEqual(Object.values(ECOSYSTEMS).map((stories) => stories.length), [10, 10, 10, 10, 10, 10, 10, 10]);
 });
 
-test("all fifty interior micro-scenes name an available behaviour", () => {
+test("all eighty interior micro-scenes name an available behaviour", () => {
   const available = new Set(BASIC_BEHAVIOURS.map((behaviour) => behaviour.id));
   const scenes = Object.values(ECOSYSTEMS).flat();
-  assert.equal(scenes.length, 50);
+  assert.equal(scenes.length, 80);
   assert.ok(scenes.every((scene) => available.has(scene.motion)));
 });
 
 test("every unordered terrain pair has one border story", () => {
-  assert.equal(BORDER_STORIES.length, 10);
-  const terrains = ["meadow", "water", "sand", "lava", "stone"] as const;
+  assert.equal(BORDER_STORIES.length, 28);
+  const terrains = ["meadow", "water", "sand", "lava", "stone", "forest", "wetland", "snow"] as const;
   for (let left = 0; left < terrains.length; left++) {
     for (let right = left + 1; right < terrains.length; right++) {
       assert.ok(borderStoryFor(terrains[left], terrains[right]));

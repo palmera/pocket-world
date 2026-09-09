@@ -118,6 +118,7 @@
           <div class="btnwrap" id="tool-draw"><button class="big tool on" id="t-draw" title="Draw">✏️</button><span class="label" id="draw-label">Draw</span></div>
           <div class="btnwrap" id="tool-paint"><button class="big tool" id="t-paint" title="Balde: rellenar región">🪣</button><span class="label" id="paint-label">Balde</span></div>
           <div class="btnwrap" id="tool-brush"><button class="big tool" id="t-brush" title="Pincel: pintar una franja">🖌️</button><span class="label">Pincel</span></div>
+          <div class="btnwrap" id="tool-relief"><button class="big tool" id="t-relief" title="Relieve: modelar el mundo"></button><span class="label">Relieve</span></div>
         </div>
       </div>
       <div id="actions" aria-label="World actions">
@@ -129,10 +130,31 @@
           <button class="big empty" id="a-empty" type="button" title="Borrar el Tiny World y empezar desde cero">Tiny desde cero</button>
       </div>
       <label id="brush-options" hidden>Grosor <input id="brush-width" type="range" min="12" max="60" step="4" value="24" aria-label="Grosor del pincel"><output id="brush-size">24 px</output></label>
+      <section id="relief-options" aria-label="Controles de relieve" hidden>
+        <div class="relief-modes" role="group" aria-label="Acción de relieve">
+          <button type="button" data-relief="raise" aria-pressed="true">Elevar</button>
+          <button type="button" data-relief="lower" aria-pressed="false">Hundir</button>
+          <button type="button" data-relief="smooth" aria-pressed="false">Suavizar</button>
+        </div>
+        <label>Radio <input id="relief-radius" type="range" min="32" max="160" step="8" value="80"><output id="relief-radius-value">80 px</output></label>
+        <label>Fuerza <input id="relief-force" type="range" min="0.5" max="5" step="0.5" value="2.5"><output id="relief-force-value">2.5</output></label>
+        <small id="relief-help">El efecto depende del terreno bajo el pincel.</small>
+      </section>
+      <details id="world-console" open>
+        <summary><span>MUNDO VIVO</span><strong id="era-name">Naturaleza</strong><span class="disclosure">⌄</span></summary>
+        <div class="console-body">
+          <p id="era-description">El paisaje comienza a poblarse.</p>
+          <div class="world-clock"><span id="world-age">00:00</span><div role="group" aria-label="Velocidad del mundo" class="speed-controls"><button data-speed="0" title="Pausar mundo" aria-pressed="false">Ⅱ</button><button data-speed="1" title="Tiempo normal" aria-pressed="true">1×</button><button data-speed="3" title="Tiempo acelerado" aria-pressed="false">3×</button></div></div>
+          <label class="density-control">Densidad de vida<select id="life-density"><option value="sparse">Serena</option><option value="balanced" selected>Equilibrada</option><option value="rich">Abundante</option></select></label>
+          <div class="discovery-head"><span>DESCUBRIMIENTOS</span><span id="discovery-count">5 / 8</span></div>
+          <div id="discovery-list"></div>
+          <p class="sandbox-note">Transformá el entorno. Sus habitantes encuentran su propio ritmo.</p>
+        </div>
+      </details>
     </div>
     <dialog id="empty-confirm" aria-labelledby="empty-title" aria-describedby="empty-description">
       <h2 id="empty-title">¿Empezar desde cero?</h2>
-      <p id="empty-description">Se borrarán todos los terrenos, bordes y habitantes del Tiny World actual. Podés recuperarlo con Deshacer mientras no recargues la página.</p>
+      <p id="empty-description">Se borrarán los terrenos, bordes, relieves y habitantes del Tiny World actual. La edad y los descubrimientos se conservan. Podés recuperar el mapa con Deshacer mientras no recargues la página.</p>
       <form method="dialog">
         <button value="cancel" autofocus>Cancelar</button>
         <button value="clear" class="confirm-empty">Borrar y empezar</button>
@@ -140,13 +162,13 @@
     </dialog>
     <div id="world-picker">
       <div class="picker-card">
-        <h1>Make a tiny world.</h1>
-        <p>Jelly and Tiny begin with a world you can paint, redraw, and make your own.</p>
+        <h1>Un mundo en tus manos.</h1>
+        <p>Dibujá continentes, modelá el relieve y observá cómo nace una historia. Sin misiones, sin controlar habitantes.</p>
         <div class="styles">
           <button class="style" data-style="blank"><span>○</span>Blank<small>just draw</small></button>
           <button class="style" data-style="doodle"><span>✎</span>Doodle<small>crayon & ink</small></button>
           <button class="style" data-style="jelly"><span>●</span>Jelly<small>soft & bouncy</small></button>
-          <button class="style" data-style="tiny"><span>◒</span>Tiny<small>little lives</small></button>
+          <button class="style" data-style="tiny"><span>◒</span>Tiny<small>un atlas vivo</small></button>
         </div>
       </div>
     </div>

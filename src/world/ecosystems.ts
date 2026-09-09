@@ -4,7 +4,10 @@ import type { BasicBehaviourId } from "./behaviours";
 // to right as it grows. Keeping these as data (rather than hidden conditionals)
 // makes the art direction easy to tune without changing the terrain engine.
 
-export type Terrain = "meadow" | "water" | "sand" | "lava" | "stone";
+export const TERRAINS = ["meadow", "water", "sand", "lava", "stone", "forest", "wetland", "snow"] as const;
+export type Terrain = typeof TERRAINS[number];
+export const MODEL_KEYS = ["worker", "explorer", "sheep", "goat", "deer", "wolf", "camel", "bird", "bat", "fish", "whale", "turtle", "crab", "sailboat", "rowboat", "camp", "village", "farm", "market", "workshop", "watchtower", "windmill", "quarry", "ruins", "reeds", "oak", "pine", "palm", "rocks", "fishing", "caravan", "forge", "watermill"] as const;
+export type ModelKey = typeof MODEL_KEYS[number];
 export type Motion = BasicBehaviourId;
 
 export interface EcosystemDetail {
@@ -15,6 +18,9 @@ export interface EcosystemDetail {
   // toy-like models, with a terrain-specific palette.
   motif: "people" | "animal" | "plant" | "vehicle" | "flying" | "waterlife" | "rocklife" | "weather" | "landmark" | "spark";
   colors: number[];
+  model?: ModelKey;
+  /** Earliest settlement age at which this scene joins the local repertoire. */
+  stage?: 0 | 1 | 2 | 3;
 }
 
 export interface BorderStory {
@@ -25,72 +31,17 @@ export interface BorderStory {
   colors: readonly number[];
 }
 
-export const ECOSYSTEMS: Record<Terrain, readonly EcosystemDetail[]> = {
-  meadow: [
-    { id: "walkers", label: "Tiny walkers", motion: "walk", motif: "people", colors: [0x293b63, 0xf4b183, 0xf5d766] },
-    { id: "dogs", label: "Dog walkers", motion: "walk", motif: "animal", colors: [0x8a5d3b, 0xf0d3b2] },
-    { id: "butterflies", label: "Butterflies", motion: "flutter", motif: "flying", colors: [0xf38ba8, 0xf6cf65, 0x83c5be] },
-    { id: "bike", label: "Little bicycle", motion: "roll", motif: "vehicle", colors: [0x48a9a6, 0x28334a] },
-    { id: "picnic", label: "Picnic blanket", motion: "pulse", motif: "landmark", colors: [0xe85d75, 0xffe2a5] },
-    { id: "sheep", label: "Sheep flock", motion: "hop", motif: "animal", colors: [0xf7f5ed, 0x657d59] },
-    { id: "flowers", label: "Wildflowers", motion: "sway", motif: "plant", colors: [0xffd166, 0xf783ac, 0x7eb77f] } as EcosystemDetail,
-    { id: "kite", label: "Kite", motion: "flutter", motif: "flying", colors: [0xff6b6b, 0x4d96ff] },
-    { id: "buggy", label: "Meadow car", motion: "roll", motif: "vehicle", colors: [0xff9f1c, 0x273043] },
-    { id: "fireflies", label: "Fireflies", motion: "orbit", motif: "spark", colors: [0xfff3a3, 0xfefae0] },
-  ],
-  water: [
-    { id: "shoal", label: "Fish shoal", motion: "glide", motif: "waterlife", colors: [0x54c6eb, 0x2f80ed] },
-    { id: "sailboat", label: "Sailboat", motion: "bob", motif: "vehicle", colors: [0xfef9ef, 0xe85d75] },
-    { id: "ducks", label: "Duck family", motion: "glide", motif: "animal", colors: [0xffcf56, 0xf7f5ed] },
-    { id: "turtle", label: "Sea turtle", motion: "glide", motif: "waterlife", colors: [0x4d9560, 0x9bce78] },
-    { id: "bubbles", label: "Bubble trail", motion: "bob", motif: "spark", colors: [0xc3f0ff, 0xf6fdff] },
-    { id: "submarine", label: "Submarine", motion: "glide", motif: "vehicle", colors: [0xf4cf4d, 0x33415c] },
-    { id: "jellyfish", label: "Jellyfish", motion: "pulse", motif: "waterlife", colors: [0xe8a7e9, 0xa0d8ef] },
-    { id: "whale", label: "Tiny whale", motion: "bob", motif: "waterlife", colors: [0x516b9f, 0xdce8ff] },
-    { id: "seaplane", label: "Seaplane", motion: "zoom", motif: "flying", colors: [0xf6f3e9, 0xeb6f92] },
-    { id: "rocketbuoy", label: "Rocket buoy", motion: "zoom", motif: "flying", colors: [0xf5f1dc, 0xf1784d] },
-  ],
-  sand: [
-    { id: "crabs", label: "Crab parade", motion: "walk", motif: "animal", colors: [0xf26b4f, 0xf9c784] },
-    { id: "tumbleweed", label: "Tumbleweed", motion: "roll", motif: "plant", colors: [0xa87946, 0xd7a86e] },
-    { id: "castle", label: "Sandcastle", motion: "pulse", motif: "landmark", colors: [0xe8bd7e, 0xf7d890] },
-    { id: "buggy", label: "Dune buggy", motion: "roll", motif: "vehicle", colors: [0xe85d75, 0x293b63] },
-    { id: "shells", label: "Shell collection", motion: "bob", motif: "spark", colors: [0xffd6e0, 0xc7b9ff] },
-    { id: "lizard", label: "Sand lizard", motion: "hop", motif: "animal", colors: [0x7eaa5c, 0xdfd17a] },
-    { id: "oasis", label: "Pocket oasis", motion: "sway", motif: "plant", colors: [0x53a9b6, 0x5c9b4c] } as EcosystemDetail,
-    { id: "caravan", label: "Tiny caravan", motion: "walk", motif: "vehicle", colors: [0xe2a45f, 0x8b5a2b] },
-    { id: "glider", label: "Sand glider", motion: "zoom", motif: "flying", colors: [0xfff4dc, 0x51a3a3] },
-    { id: "launchpad", label: "Rocket launch", motion: "zoom", motif: "flying", colors: [0xf5f1dc, 0xf06449] },
-  ],
-  lava: [
-    { id: "bubbles", label: "Magma bubbles", motion: "pulse", motif: "spark", colors: [0xffb703, 0xff6b35] },
-    { id: "salamander", label: "Fire salamander", motion: "hop", motif: "animal", colors: [0xff7b00, 0x3c2f2f] },
-    { id: "embers", label: "Ember beetles", motion: "orbit", motif: "rocklife", colors: [0xffd166, 0xf45b69] },
-    { id: "geyser", label: "Lava geyser", motion: "pulse", motif: "weather", colors: [0xff5d3d, 0xffd166] },
-    { id: "firekite", label: "Fire kite", motion: "flutter", motif: "flying", colors: [0xff9f1c, 0xffe66d] },
-    { id: "hopper", label: "Rock hopper", motion: "hop", motif: "rocklife", colors: [0x554348, 0xff9f1c] },
-    { id: "obsidian", label: "Obsidian crystals", motion: "pulse", motif: "landmark", colors: [0x382f3a, 0x8d5a97] },
-    { id: "magmaCart", label: "Magma cart", motion: "roll", motif: "vehicle", colors: [0x55303a, 0xffa630] },
-    { id: "smoke", label: "Smoke rings", motion: "drift", motif: "weather", colors: [0x554348, 0xcfb9c8] },
-    { id: "flareRocket", label: "Flare rocket", motion: "zoom", motif: "flying", colors: [0xfff7e8, 0xf45b69] },
-  ],
-  stone: [
-    { id: "crystals", label: "Crystal sprouts", motion: "pulse", motif: "landmark", colors: [0x8b7bd1, 0xb9a7f4] },
-    { id: "goats", label: "Mountain goats", motion: "hop", motif: "animal", colors: [0xf3e4c8, 0x7b6d75] },
-    { id: "cart", label: "Mine cart", motion: "roll", motif: "vehicle", colors: [0x5b657a, 0xf4b942] },
-    { id: "bats", label: "Cave bats", motion: "flutter", motif: "flying", colors: [0x374151, 0x8290a5] },
-    { id: "climbers", label: "Tiny climbers", motion: "walk", motif: "people", colors: [0xe85d75, 0x3b82a0] },
-    { id: "cablecar", label: "Cable car", motion: "glide", motif: "vehicle", colors: [0xf2c14e, 0x33415c] },
-    { id: "moss", label: "Moss cushions", motion: "sway", motif: "plant", colors: [0x679b5a, 0xa2c98b] } as EcosystemDetail,
-    { id: "drone", label: "Explorer drone", motion: "orbit", motif: "flying", colors: [0xe9edf5, 0x5c6f91] },
-    { id: "train", label: "Tunnel train", motion: "roll", motif: "vehicle", colors: [0xd94e41, 0x303846] },
-    { id: "meteor", label: "Shooting star", motion: "zoom", motif: "spark", colors: [0xffe99b, 0xfdf2cd] },
-  ],
-};
+const LEGACY_ECOSYSTEMS = {
+  meadow: ["walkers", "dogs", "butterflies", "bike", "picnic", "sheep", "flowers", "kite", "buggy", "fireflies"],
+  water: ["shoal", "sailboat", "ducks", "turtle", "bubbles", "submarine", "jellyfish", "whale", "seaplane", "rocketbuoy"],
+  sand: ["crabs", "tumbleweed", "castle", "buggy", "shells", "lizard", "oasis", "caravan", "glider", "launchpad"],
+  lava: ["bubbles", "salamander", "embers", "geyser", "firekite", "hopper", "obsidian", "magmaCart", "smoke", "flareRocket"],
+  stone: ["crystals", "goats", "cart", "bats", "climbers", "cablecar", "moss", "drone", "train", "meteor"],
+} as const;
 
 // A border is an opportunity for two little worlds to acknowledge one another.
 // There is one authored story for every unordered pair of the five terrains.
-export const BORDER_STORIES: readonly BorderStory[] = [
+const LEGACY_BORDER_STORIES: readonly BorderStory[] = [
   { id: "fishing", label: "Fishing at the water's edge", terrains: ["meadow", "water"], motion: "bob", colors: [0xf4b183, 0x55c4e8, 0x5e4025] },
   { id: "beachDay", label: "Sandcastle picnic", terrains: ["meadow", "sand"], motion: "sway", colors: [0xffd166, 0xe8bd7e, 0x79bd58] },
   { id: "firewatch", label: "Campfire lookout", terrains: ["meadow", "lava"], motion: "pulse", colors: [0xffd166, 0xff6b35, 0x293b63] },
@@ -104,5 +55,100 @@ export const BORDER_STORIES: readonly BorderStory[] = [
 ];
 
 export function borderStoryFor(left: Terrain, right: Terrain): BorderStory | undefined {
+  if (left === right) return undefined;
   return BORDER_STORIES.find((story) => story.terrains.includes(left) && story.terrains.includes(right));
+}
+
+// Paint and legacy scene identifiers remain stable in saves. The same scene
+// now resolves to grounded art: no modern vehicles, rockets or candy pigments.
+const linen = [0xb9aa82, 0x64553e, 0x807749], timber = [0x755d41, 0xc3af7e, 0x3e5340];
+const water = [0x4d7479, 0xc4b891, 0x4e514d], stone = [0x747775, 0xb8ae92, 0x615d52], sand = [0xb6935d, 0x71513a, 0xc9ba93];
+const d = (id: string, label: string, model: ModelKey, motion: Motion, motif: EcosystemDetail["motif"], colors: number[], stage: 0 | 1 | 2 | 3 = 0): EcosystemDetail => ({ id, label, model, motion, motif, colors: [...colors], stage });
+type HistoricalEntry = [ModelKey, string, Motion, EcosystemDetail["motif"], (0 | 1 | 2 | 3)?];
+const historical: Record<keyof typeof LEGACY_ECOSYSTEMS, HistoricalEntry[]> = {
+  meadow: [
+    ["worker", "Pobladores y senderos", "walk", "people"], ["wolf", "Lobos de la pradera", "graze", "animal"],
+    ["bird", "Aves de la campiña", "flutter", "flying"], ["farm", "Cosecha de la campiña", "work", "landmark", 1],
+    ["camp", "Campamento de colonos", "work", "landmark"], ["sheep", "Rebaño de ovejas", "graze", "animal"],
+    ["farm", "Campos cultivados", "sway", "plant", 1], ["windmill", "Molino de viento", "turn", "landmark", 2],
+    ["market", "Mercado de la aldea", "work", "landmark", 2], ["village", "Aldea de la llanura", "work", "landmark", 3],
+  ],
+  water: [
+    ["fish", "Banco de peces", "glide", "waterlife"], ["sailboat", "Velero mercante", "bob", "vehicle", 1],
+    ["bird", "Aves acuáticas", "glide", "animal"], ["turtle", "Tortugas marinas", "glide", "waterlife"],
+    ["rocks", "Rocas del arrecife", "still", "landmark"], ["rowboat", "Barca de pescadores", "row", "vehicle"],
+    ["fish", "Peces del arrecife", "glide", "waterlife"], ["whale", "Paso de ballenas", "bob", "waterlife", 1],
+    ["bird", "Aves migratorias", "flutter", "flying", 2], ["watchtower", "Atalaya costera", "still", "landmark", 3],
+  ],
+  sand: [
+    ["crab", "Cangrejos de la costa", "walk", "animal"], ["palm", "Palmeras al viento", "sway", "plant"],
+    ["camp", "Campamento del desierto", "work", "landmark"], ["market", "Comerciantes de las dunas", "work", "landmark", 2],
+    ["rocks", "Piedras de la costa", "still", "landmark"], ["goat", "Cabras del desierto", "graze", "animal"],
+    ["palm", "Palmeras del oasis", "sway", "plant"], ["camel", "Caravana de camellos", "walk", "animal", 1],
+    ["explorer", "Exploradores del desierto", "walk", "people", 2], ["ruins", "Ruinas de arenisca", "still", "landmark", 3],
+  ],
+  lava: [
+    ["rocks", "Afloramientos de basalto", "still", "landmark"], ["explorer", "Exploradores del volcán", "walk", "people"],
+    ["quarry", "Cantera volcánica", "work", "landmark", 1], ["rocks", "Fumarolas y peñascos", "still", "weather"],
+    ["bird", "Aves sobre las calderas", "flutter", "flying"], ["goat", "Cabras de las laderas", "graze", "animal"],
+    ["rocks", "Obsidiana", "still", "landmark"], ["workshop", "Taller de canteros", "work", "landmark", 2],
+    ["camp", "Campamento geológico", "work", "landmark", 1], ["watchtower", "Fortaleza de basalto", "still", "landmark", 3],
+  ],
+  stone: [
+    ["rocks", "Vetas de mineral", "still", "landmark"], ["goat", "Cabras de montaña", "graze", "animal"],
+    ["quarry", "Cantera de montaña", "work", "landmark", 1], ["bat", "Murciélagos de las cuevas", "flutter", "flying"],
+    ["explorer", "Exploradores de las cumbres", "walk", "people"], ["camp", "Puesto del paso montañoso", "work", "landmark", 1],
+    ["pine", "Pinos de las laderas", "sway", "plant"], ["bird", "Aves de presa", "orbit", "flying"],
+    ["workshop", "Taller de piedra", "work", "landmark", 2], ["watchtower", "Ciudadela de montaña", "still", "landmark", 3],
+  ],
+};
+const palettes = { meadow: timber, water, sand, lava: stone, stone };
+const legacy = Object.fromEntries(Object.entries(LEGACY_ECOSYSTEMS).map(([terrain, entries]) => [terrain, entries.map((entry, i) => {
+  const [model, label, motion, motif, stage = 0] = historical[terrain as keyof typeof historical][i];
+  return d(entry, label, model, motion, motif, palettes[terrain as keyof typeof palettes], stage);
+})])) as unknown as Record<keyof typeof LEGACY_ECOSYSTEMS, readonly EcosystemDetail[]>;
+
+export const ECOSYSTEMS: Record<Terrain, readonly EcosystemDetail[]> = {
+  ...legacy,
+  forest: [
+    d("foresters", "Recolectores del bosque", "worker", "gather", "people", timber),
+    d("deer", "Ciervos del claro", "deer", "graze", "animal", timber),
+    d("wolves", "Lobos del bosque", "wolf", "walk", "animal", stone),
+    d("woodlandBirds", "Aves del dosel", "bird", "flutter", "flying", linen),
+    d("forestCamp", "Campamento forestal", "camp", "work", "landmark", timber),
+    d("sawmill", "Taller de carpinteros", "workshop", "work", "landmark", timber, 1),
+    d("oldOak", "Robles centenarios", "oak", "sway", "plant", timber),
+    d("forestVillage", "Aldea entre los árboles", "village", "work", "landmark", timber, 2),
+    d("forestRuins", "Ruinas cubiertas de bosque", "ruins", "still", "landmark", stone, 3),
+    d("woodlandCaravan", "Mercado del bosque", "market", "work", "landmark", linen, 2),
+  ],
+  wetland: [
+    d("reeds", "Juncales", "reeds", "sway", "plant", timber), d("herons", "Garzas de la laguna", "bird", "graze", "animal", linen),
+    d("marshFish", "Peces de los canales", "fish", "glide", "waterlife", water), d("marshTurtles", "Tortugas de la marisma", "turtle", "glide", "waterlife", timber),
+    d("reedGatherers", "Recolectores de juncos", "worker", "gather", "people", linen), d("reedBoat", "Barcas de los canales", "rowboat", "row", "vehicle", timber, 1),
+    d("stiltVillage", "Aldea del humedal", "village", "work", "landmark", timber, 2), d("marshMarket", "Mercado fluvial", "market", "work", "landmark", sand, 2),
+    d("migratingBirds", "Bandada migratoria", "bird", "flutter", "flying", linen, 1), d("wetlandRuins", "Ruinas entre las aguas", "ruins", "still", "landmark", stone, 3),
+  ],
+  snow: [
+    d("pines", "Abetos nevados", "pine", "sway", "plant", timber), d("alpineGoats", "Cabras alpinas", "goat", "graze", "animal", linen),
+    d("snowWolves", "Lobos del invierno", "wolf", "walk", "animal", stone), d("snowExplorers", "Exploradores de la nieve", "explorer", "walk", "people", linen),
+    d("winterCamp", "Refugio de invierno", "camp", "work", "landmark", timber), d("snowQuarry", "Cantera alpina", "quarry", "work", "landmark", stone, 1),
+    d("winterVillage", "Aldea de montaña", "village", "work", "landmark", timber, 2), d("snowBirds", "Aves de las cumbres", "bird", "flutter", "flying", stone),
+    d("mountainWatch", "Atalaya del paso", "watchtower", "still", "landmark", stone, 2), d("ancientKeep", "Antigua fortaleza", "ruins", "still", "landmark", stone, 3),
+  ],
+};
+
+const addedStories: BorderStory[] = [];
+for (let a = 0; a < TERRAINS.length; a++) for (let b = a + 1; b < TERRAINS.length; b++) {
+  const left = TERRAINS[a], right = TERRAINS[b];
+  if (LEGACY_BORDER_STORIES.some(story => story.terrains.includes(left) && story.terrains.includes(right))) continue;
+  const waterside = left === "water" || left === "wetland" || right === "water" || right === "wetland";
+  addedStories.push({ id: `${left}-${right}`, label: waterside ? "Intercambio en la ribera" : "Sendero entre ecosistemas", terrains: [left, right], motion: waterside ? "row" : "walk", colors: waterside ? water : timber });
+}
+export const BORDER_STORIES: readonly BorderStory[] = [
+  ...LEGACY_BORDER_STORIES.map(story => ({ ...story, colors: story.terrains.includes("water") ? water : timber, motion: story.motion === "pulse" ? "work" : story.motion })),
+  ...addedStories,
+];
+export function availableScenes(terrain: Terrain, stage: number): readonly EcosystemDetail[] {
+  return ECOSYSTEMS[terrain].filter(scene => (scene.stage ?? 0) <= stage);
 }

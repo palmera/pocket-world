@@ -66,3 +66,74 @@ body[data-world="blank"] #world-caption,body[data-world="doodle"] #world-caption
 @media(max-width:620px) { #actions { top:142px; left:20px; right:auto; } #actions button.big { width:34px; height:34px; } }
 #actions button.empty { min-height:44px; }
 @media(max-width:620px) { #actions button.empty { width:auto; min-width:110px; } #input-mode { top:208px; } }
+
+/* Tiny's atlas instruments: restrained brass, charcoal and parchment. */
+body[data-world="tiny"] { --display:"Avenir Next",-apple-system,system-ui,sans-serif; }
+body[data-world="tiny"] #world-caption { color:#b2b69c; letter-spacing:.15em; font-size:9px; }
+body[data-world="tiny"] #world-caption strong { font-family:Georgia,serif; font-size:42px; letter-spacing:-1.4px; color:#e8dfc6; }
+body[data-world="tiny"] #topbar .brand { font-weight:600; letter-spacing:-.4px; }
+body[data-world="tiny"] #palette { background:#202a29ed; border:1px solid #b8a37855; border-radius:12px; box-shadow:0 12px 40px #0005; padding:12px 16px; gap:18px; }
+body[data-world="tiny"] .tools-inner { border-color:#b8a37840; }
+body[data-world="tiny"] #palette .btnwrap .label { color:#a8b0a4; font-size:8px; }
+body[data-world="tiny"] #palette button.big { color:#bcc2b2; border-radius:6px; height:36px; }
+body[data-world="tiny"] #palette button.big.on { color:#efe2bc; background:#53604b; box-shadow:inset 0 0 0 1px #b9a77766; }
+body[data-world="tiny"] #palette .biomes { gap:8px; }
+body[data-world="tiny"] .biome { width:33px;height:33px;border:2px solid #e8dfc64d;border-radius:7px;box-shadow:none;font-size:19px;color:#e8dfc6; }
+body[data-world="tiny"] .biome.selected { box-shadow:0 0 0 2px #e0c58f; }
+.biome[hidden],.btnwrap[hidden] { display:none!important; }
+.biome.locked { filter:grayscale(.75); opacity:.44; cursor:help; }
+#world-console { position:fixed;left:32px;top:200px;width:232px;z-index:5;background:#1c2625e8;color:#e7dfc7;border:1px solid #a9946c4d;border-radius:10px;backdrop-filter:blur(16px);box-shadow:0 8px 32px #0002;font-size:12px; }
+#world-console[hidden] {display:none;}
+#world-console summary { list-style:none;display:flex;gap:10px;align-items:center;padding:15px 14px;cursor:pointer;min-height:24px; }
+#world-console summary::-webkit-details-marker {display:none;}
+#world-console summary>span:first-child {font-size:8px;letter-spacing:.15em;color:#a99b7b;}
+#world-console summary strong {font-family:Georgia,serif;font-size:17px;font-weight:400;}
+#world-console .disclosure {margin-left:auto;color:#a99b7b;}
+#world-console[open] .disclosure {transform:rotate(180deg);}
+.console-body {padding:0 14px 14px;max-height:calc(100dvh - 345px);overflow-y:auto;}
+#era-description {margin:0 0 16px;line-height:1.65;color:#a9b0a0;font-size:11px;}
+.world-clock {display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-block:1px solid #b8a37825;}
+#world-age {font-variant-numeric:tabular-nums;font-size:17px;color:#d8c498;letter-spacing:.07em;}
+.speed-controls {display:flex;gap:4px;}
+.speed-controls button,.relief-modes button {border:1px solid #b8a37830;border-radius:5px;background:transparent;color:#b7bfac;cursor:pointer;min-height:34px;min-width:34px;}
+.speed-controls button[aria-pressed="true"],.relief-modes button[aria-pressed="true"] {background:#59664f;color:#fff0c9;border-color:#baa87c;}
+.density-control {display:flex;justify-content:space-between;align-items:center;gap:8px;margin:14px 0 20px;color:#b4b9a8;font-size:10px;}
+.density-control select {background:#27322c;border:1px solid #b8a37835;color:#e1d7bc;border-radius:5px;min-height:34px;padding:0 5px;font-size:11px;max-width:118px;}
+.discovery-head {display:flex;justify-content:space-between;color:#a99b7b;font-size:8px;letter-spacing:.1em;}
+.discovery {margin-top:13px;}
+.discovery>div {display:flex;justify-content:space-between;align-items:center;}
+.discovery strong {font-weight:500;font-size:12px;color:#d8d7c4;}
+.discovery span {font-size:9px;color:#8f9b89;}
+.discovery progress {appearance:none;width:100%;height:3px;border:0;border-radius:2px;display:block;margin:7px 0;background:#41493b;}
+.discovery progress::-webkit-progress-bar {background:#41493b;}
+.discovery progress::-webkit-progress-value {background:#b39d6a;}
+.discovery progress::-moz-progress-bar {background:#b39d6a;}
+.discovery small {display:block;font-size:9px;color:#8f9b89;line-height:1.5;}
+.discovery.discovered span {color:#aac38d;}
+.sandbox-note {margin:17px 0 0;border-top:1px solid #b8a37825;padding-top:12px;font-size:10px;color:#929e8c;line-height:1.7;}
+#relief-options {position:fixed;left:50%;bottom:110px;transform:translateX(-50%);z-index:8;background:#202a29f5;border:1px solid #b8a37866;border-radius:10px;color:#d6d3bd;padding:12px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;max-width:calc(100vw - 32px);width:540px;font-size:11px;}
+#relief-options[hidden] {display:none;}
+.relief-modes {display:flex;gap:4px;}
+.relief-modes button {padding:0 9px;font-size:11px;}
+#relief-options label {display:flex;align-items:center;gap:7px;}
+#relief-options input {width:84px;accent-color:#bba478;min-height:28px;}
+#relief-options output {min-width:30px;color:#b7ad91;font-size:10px;}
+#relief-help {width:100%;font-size:10px;color:#96a18e;line-height:1.5;}
+body[data-world="tiny"] #brush-options {background:#202a29f5;color:#d6d3bd;border:1px solid #b8a37866;border-radius:10px;}
+body[data-world="tiny"] #actions {border-radius:8px;background:#1c2625b8;border-color:#a9946c4d;}
+body[data-world="tiny"] #input-mode {border-radius:8px;background:#202a29ed;border-color:#a9946c4d;}
+body[data-world="tiny"] #input-mode button {border-radius:5px;color:#b7bfac;}
+body[data-world="tiny"] #input-mode button[aria-pressed="true"] {background:#59664f;color:#f3e6c1;}
+#world-picker .style[data-style="tiny"] span {background:radial-gradient(ellipse at 27% 18%,#788653 0 22%,transparent 23%),radial-gradient(ellipse at 66% 58%,#788653 0 29%,transparent 30%),radial-gradient(ellipse at 20% 80%,#bfa573 0 17%,transparent 18%),#356b75;}
+@media(max-width:850px) {#world-console{top:174px;left:24px;width:216px;}body[data-world="tiny"] #world-caption strong{font-size:32px;}}
+@media(max-width:620px) {
+  #actions{top:62px;left:16px;right:16px;justify-content:space-between;}#actions button.empty{min-width:102px;padding:0 8px;}
+  #input-mode{top:116px;left:auto;right:16px;padding:3px;}#input-mode button{min-width:48px;min-height:34px;font-size:11px;}
+  #world-caption{top:125px;left:16px;font-size:8px;}body[data-world="tiny"] #world-caption{font-size:7px;max-width:200px;}body[data-world="tiny"] #world-caption strong{font-size:29px;}
+  #world-console{top:190px;left:16px;width:218px;}#world-console summary{padding:10px 12px;} .console-body{max-height:calc(100dvh - 400px);}
+  #palette,body[data-world="tiny"] #palette{flex-wrap:wrap;justify-content:center;width:max-content;max-width:calc(100vw - 24px);padding:10px 12px;gap:10px;bottom:calc(12px + env(safe-area-inset-bottom));}
+  #palette .tools-inner{order:1;width:100%;justify-content:center;padding-right:0;border:0;gap:8px;}#palette .biomes{order:2;justify-content:center;width:100%;}
+  #palette button.big{min-width:39px;min-height:35px;}body[data-world="tiny"] .biome{width:30px;height:30px;}
+  #relief-options{bottom:154px;width:calc(100vw - 56px);gap:10px;padding:10px 12px;}#relief-options label{font-size:10px;}#relief-options input{width:70px;}.relief-modes{width:100%;}.relief-modes button{flex:1;min-height:38px;}
+  #brush-options{bottom:154px;}
+}

@@ -1,5 +1,5 @@
 import { sphericalArea } from "../engine/freestyle/sphereGraph";
-import { ECOSYSTEMS, type Terrain } from "./ecosystems";
+import { ECOSYSTEMS, TERRAINS, type Terrain } from "./ecosystems";
 
 export interface EdgeOwner {
   a: number;
@@ -26,7 +26,7 @@ export function panelKey(face: readonly number[]): string {
 }
 
 export function isTerrain(value: string | undefined): value is Terrain {
-  return value === "meadow" || value === "water" || value === "sand" || value === "lava" || value === "stone";
+  return value !== undefined && (TERRAINS as readonly string[]).includes(value);
 }
 
 // The first little discovery appears immediately. A larger region earns a new

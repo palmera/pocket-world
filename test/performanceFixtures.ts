@@ -3,6 +3,8 @@ import { KidsBall } from "../src/scene/KidsBall";
 import { FrameCache } from "../src/scene/renderResources";
 import { drawBorder, type BorderEdit } from "../src/world/drawBorder";
 import { regularSphereLoop } from "../src/engine/freestyle/freestyleGraph";
+import { createLivingState } from "../src/world/livingWorld";
+import { createReliefSampler } from "../src/world/relief";
 
 export function nestedWorld(count: number): BorderEdit {
   let world=drawBorder({verts:[],edges:[]},{},regularSphereLoop([0,0,1],.8,[1,0,1],96),true,.001,"meadow");
@@ -23,6 +25,7 @@ export function headlessWorld(world: BorderEdit) {
     scene:new THREE.Scene(), group:new THREE.Group(), panelMeshes:[], animatedDetails:[],
     jellyShaders:[], exactEdges:new Set(), faceGeometry:new FrameCache(), surfaceGeometry:new FrameCache(), toyModels:new FrameCache(),
     shadowTexture:new THREE.Texture(), panelMaterial:()=>new THREE.MeshStandardMaterial(),
+    living:createLivingState(),relief:[],reliefSampler:createReliefSampler([]),lifeGroup:new THREE.Group(),weatherDetails:[],container:new EventTarget(),
   });
   ball.scene.add(ball.group);
   return ball;
